@@ -1,10 +1,13 @@
 FROM python:3.11-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     make \
+    libterm-readline-perl-perl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
