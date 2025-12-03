@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 def create_ollama_llm(
-    model: str = "llama3.1",
-    base_url: str = "http://localhost:11434",
+    model: str = "llama3.1:8b",
+    base_url: str = "http://192.168.1.120:11434",
     temperature: float = 0.7,
     **kwargs,
 ) -> openai.LLM:
@@ -94,7 +94,8 @@ def validate_ollama_connection(base_url: str = "http://localhost:11434") -> bool
         response.raise_for_status()
 
         models = response.json().get("models", [])
-        logger.info(f"Ollama server connected. Available models: {len(models)}")
+        logger.info(
+            f"Ollama server connected. Available models: {len(models)}")
 
         for model in models:
             logger.info(f"  - {model['name']}")

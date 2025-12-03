@@ -62,7 +62,8 @@ class TrinityAssistant(Agent):
             tts=tts,
             vad=vad,
         )
-        logger.info("TrinityAssistant initialized with custom STT/LLM/TTS plugins")
+        logger.info(
+            "TrinityAssistant initialized with custom STT/LLM/TTS plugins")
 
     async def on_enter(self):
         """Called when the agent becomes active in a session."""
@@ -100,7 +101,7 @@ async def entrypoint(ctx: JobContext):
         whisperlive_host = os.getenv("WHISPERLIVE_HOST", "whisperlive")
         whisperlive_port = int(os.getenv("WHISPERLIVE_PORT", "9090"))
         ollama_url = os.getenv("OLLAMA_URL", "http://192.168.1.120:11434")
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1")
+        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
         piper_url = os.getenv("PIPER_URL", "http://piper-tts:5500")
 
         logger.info(f"Configuration:")
@@ -148,13 +149,15 @@ async def entrypoint(ctx: JobContext):
         # Set up room event handlers
         @ctx.room.on("participant_connected")
         def on_participant_connected(participant: rtc.RemoteParticipant):
-            logger.info(f"🔵 Participant connected: {participant.identity} (SID: {participant.sid})")
+            logger.info(
+                f"🔵 Participant connected: {participant.identity} (SID: {participant.sid})")
             logger.info(f"   - Kind: {participant.kind}")
             logger.info(f"   - Tracks: {len(participant.track_publications)}")
 
             # Check if this is a SIP caller
             if hasattr(participant, 'kind') and str(participant.kind) == "ParticipantKind.PARTICIPANT_KIND_SIP":
-                logger.info("📞 SIP caller detected - agent will respond to their audio")
+                logger.info(
+                    "📞 SIP caller detected - agent will respond to their audio")
 
         @ctx.room.on("participant_disconnected")
         def on_participant_disconnected(participant: rtc.RemoteParticipant):
@@ -192,7 +195,8 @@ async def entrypoint(ctx: JobContext):
             """Handle conversation items (user and agent messages)."""
             logger.info(f"💬 Conversation item added:")
             logger.info(f"   - Role: {item.role}")
-            logger.info(f"   - Content: {item.content[:100] if len(item.content) > 100 else item.content}")
+            logger.info(
+                f"   - Content: {item.content[:100] if len(item.content) > 100 else item.content}")
 
             # If this is an agent response, publish it
             if item.role == "assistant":
@@ -242,7 +246,8 @@ async def entrypoint(ctx: JobContext):
         logger.info("="*80)
         logger.info("✓ AGENT SESSION STARTED SUCCESSFULLY")
         logger.info("  The agent is now listening for user input...")
-        logger.info("  Pipeline: Audio → VAD → STT (WhisperLive) → LLM (Ollama) → TTS (Piper) → Audio")
+        logger.info(
+            "  Pipeline: Audio → VAD → STT (WhisperLive) → LLM (Ollama) → TTS (Piper) → Audio")
         logger.info("="*80)
 
     except Exception as e:
@@ -257,7 +262,8 @@ if __name__ == "__main__":
     logger.info("Starting LiveKit AI Agent Worker...")
     logger.info(f"LiveKit URL: {os.getenv('LIVEKIT_URL', 'not set')}")
     logger.info(f"Ollama URL: {os.getenv('OLLAMA_URL', 'not set')}")
-    logger.info(f"WhisperLive: {os.getenv('WHISPERLIVE_HOST', 'whisperlive')}:{os.getenv('WHISPERLIVE_PORT', '9090')}")
+    logger.info(
+        f"WhisperLive: {os.getenv('WHISPERLIVE_HOST', 'whisperlive')}:{os.getenv('WHISPERLIVE_PORT', '9090')}")
     logger.info(f"Piper TTS: {os.getenv('PIPER_URL', 'not set')}")
 
     # Run the agent with WorkerOptions pattern
