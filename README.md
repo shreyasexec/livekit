@@ -202,17 +202,35 @@ livekit/
 
 ## 🐛 Troubleshooting
 
+### WhisperLive Container Failing
+
+If you see `✘ Container livekit-whisperlive-1 Error`, see the comprehensive guide:
+**→ [WHISPERLIVE_TROUBLESHOOTING.md](WHISPERLIVE_TROUBLESHOOTING.md)**
+
+Quick fixes:
+```bash
+# Check logs
+docker compose logs whisperlive
+
+# Verify port listening
+docker compose exec whisperlive netstat -tuln | grep 9090
+
+# Restart with extended startup time
+docker compose down
+docker compose up -d
+```
+
 ### Agent Not Responding
 
 ```bash
 # Check agent logs
-docker-compose logs -f agent-worker
+docker compose logs -f agent-worker
 
 # Verify Ollama is accessible
 curl http://192.168.1.120:11434/api/tags
 
 # Check WhisperLive
-docker-compose logs -f whisperlive
+docker compose logs -f whisperlive
 
 # Verify Piper TTS
 curl http://localhost:5500/health
@@ -222,7 +240,7 @@ curl http://localhost:5500/health
 
 ```bash
 # Verify SIP service is using host network
-docker-compose ps livekit-sip
+docker compose ps livekit-sip
 
 # Check firewall
 sudo ufw allow 5060/udp
@@ -244,6 +262,16 @@ sudo ufw allow 10000:20000/udp
 # Or reduce model size
 # Edit .env: WHISPERLIVE_MODEL=tiny
 ```
+
+### Common Issues
+
+| Issue | Solution | Reference |
+|-------|----------|-----------|
+| WhisperLive fails | See dedicated guide | [WHISPERLIVE_TROUBLESHOOTING.md](WHISPERLIVE_TROUBLESHOOTING.md) |
+| Docker Compose V1 error | Use `docker compose` not `docker-compose` | [FIXES_SUMMARY.md](FIXES_SUMMARY.md) |
+| Missing frontend | Run `npm install` in frontend/ | [frontend/README.md](frontend/README.md) |
+| SIP not configured | Run `setup_sip.py` script | [START_GUIDE.md](START_GUIDE.md) |
+| Ollama timeout | Check connectivity and increase timeout | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 
 ## 📊 Monitoring
 

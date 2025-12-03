@@ -310,10 +310,13 @@ docker compose logs -f whisperlive
 ## 💡 Tips
 
 1. **Always use `docker compose` (V2), not `docker-compose` (V1)**
-2. **Wait 30-60 seconds after `up -d` for services to be healthy**
+   - ❌ Wrong: `docker-compose up -d`
+   - ✅ Correct: `docker compose up -d`
+2. **Wait 60 seconds after `up -d` for services to be healthy** (WhisperLive needs time to load model)
 3. **Check logs if something doesn't work: `docker compose logs -f`**
 4. **Use `--build` flag if you changed code: `docker compose up -d --build`**
 5. **Services depend on each other - start in order if having issues**
+6. **WhisperLive failing? See WHISPERLIVE_TROUBLESHOOTING.md**
 
 ---
 
