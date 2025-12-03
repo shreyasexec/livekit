@@ -197,6 +197,14 @@ class PiperTTS(tts.TTS):
     """
 
     def __init__(self, base_url: str, voice: str, sample_rate: int = 22050):
+        # Ensure EventEmitter state exists for metrics callbacks in AgentSession
+        try:
+            super().__init__()
+        except Exception:
+            pass
+        if not hasattr(self, "_events"):
+            self._events = {}
+
         self.base_url = base_url.rstrip("/")
         self.voice = voice
         self._sample_rate = sample_rate
