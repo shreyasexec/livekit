@@ -42,10 +42,11 @@ services:
       - ./configs/sip.yaml:/sip.yaml
     environment:
       - SIP_CONFIG_FILE=/sip.yaml
+    command: ["--config", "/sip.yaml"]
     restart: unless-stopped
-    depends_on:
-      - redis
-      - livekit
+    profiles:
+      - sip
+
     # Removed profiles to auto-start with docker compose up
 
   # WhisperLive STT Service - CPU version
@@ -129,7 +130,9 @@ services:
         condition: service_started
       piper-tts:
         condition: service_healthy
-    command: ["livekit-agents", "devserver", "agent.worker:server"]
+    #command: ["livekit-agents", "devserver", "agent.worker:server"]
+    command:
+      ["/usr/local/bin/livekit-agents", "devserver", "agent.worker:server"]
     networks:
       - livekit-network
     restart: unless-stopped
