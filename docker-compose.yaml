@@ -60,6 +60,7 @@ services:
       - "9090"
       - --backend
       - faster_whisper
+      - --no_single_model
       - --max_clients
       - "10"
       - --max_connection_time
@@ -69,11 +70,18 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - "netstat -an | grep 9090 | grep LISTEN || ss -tuln | grep 9090"
+        - >
+          python3 - <<'PY'
+          import asyncio, websockets
+          async def main():
+              async with websockets.connect("ws://localhost:9090"):
+                  return
+          asyncio.run(main())
+          PY
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 60s
+      retries: 3
+      start_period: 45s
     restart: unless-stopped
 
   # Piper TTS Service
