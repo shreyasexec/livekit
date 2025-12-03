@@ -213,6 +213,14 @@ class WhisperLiveSTT(stt.STT):
         model: str = "small",
         use_vad: bool = True,
     ):
+        # Ensure EventEmitter state exists for metrics callbacks in AgentSession
+        try:
+            super().__init__()
+        except Exception:
+            pass
+        if not hasattr(self, "_events"):
+            self._events = {}
+
         self.host = host
         self.port = port
         self.lang = lang
