@@ -172,6 +172,21 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # NGINX SSL Proxy
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    ports:
+      - "443:443"
+      - "7880:7880"
+    depends_on:
+      - livekit
+      - backend
+    networks:
+      - livekit-network
+    restart: unless-stopped
+
   # React Frontend
   frontend:
     build:
@@ -179,10 +194,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-      - "3001:3000"
     environment:
-      - VITE_LIVEKIT_URL=${VITE_LIVEKIT_URL:-ws://localhost:7880}
-      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      - VITE_LIVEKIT_URL=wss://192.168.20.224:7880
+      - VITE_API_URL=https://192.168.20.224/api
     depends_on:
       backend:
         condition: service_healthy
