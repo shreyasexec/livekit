@@ -133,7 +133,7 @@ services:
         condition: service_healthy
     #command: ["livekit-agents", "devserver", "agent.worker:server"]
 
-    command: ["python", "-m", "agent.worker.py", "dev"]
+    command: ["python", "-m", "agent.worker", "dev"]
 
     networks:
       - livekit-network
