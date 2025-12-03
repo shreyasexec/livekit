@@ -16,6 +16,20 @@ from typing import Optional
 
 import httpx
 from livekit.agents import tts
+from dataclasses import dataclass
+
+# Compatibility shims for older livekit.agents.tts versions that may not expose Speech
+AudioFormat = getattr(tts, "AudioFormat", None)
+SpeechBase = getattr(tts, "Speech", None)
+
+if SpeechBase is None:
+    @dataclass
+    class SpeechBase:  # type: ignore
+        audio: bytes
+        sample_rate: int
+        num_channels: int
+        format: object
+
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +207,7 @@ class PiperTTS(tts.TTS):
         *,
         sample_rate: Optional[int] = None,
         voice: Optional[str] = None,
-    ) -> tts.Speech:
+    ) -> SpeechBase:
         """
         Synthesize text via Piper HTTP API and return audio to LiveKit.
         """
@@ -213,11 +227,13 @@ class PiperTTS(tts.TTS):
                 resp.raise_for_status()
                 audio_data = resp.content
 
-            return tts.Speech(
+            fmt = AudioFormat.WAV if AudioFormat is not None else "wav"
+
+            return SpeechBase(
                 audio=audio_data,
                 sample_rate=sr,
                 num_channels=1,
-                format=tts.AudioFormat.WAV,
+                format=fmt,
             )
         except Exception as e:
             logger.error(f"Piper synth failed: {e}")
