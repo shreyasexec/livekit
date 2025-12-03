@@ -22,9 +22,7 @@ services:
       - "50000-50100:50000-50100/udp"
     volumes:
       - ./configs/livekit.yaml:/livekit.yaml
-    command: --config /livekit.yaml
-    environment:
-      - LIVEKIT_CONFIG=/livekit.yaml
+    command: ["--config", "/livekit.yaml"]
     depends_on:
       redis:
         condition: service_healthy
@@ -48,7 +46,7 @@ services:
     profiles:
       - sip
 
-  # WhisperLive STT Service - CPU version (works on Windows & Ubuntu)
+  # WhisperLive STT Service - CPU version
   whisperlive:
     image: ghcr.io/collabora/whisperlive-cpu:latest
     ports:
@@ -62,7 +60,7 @@ services:
       - "9090"
       - --backend
       - faster_whisper
-      - --model
+      - --faster_whisper_model
       - small
       - --max_clients
       - "10"
@@ -71,11 +69,11 @@ services:
     networks:
       - livekit-network
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\", 9090)); s.close()' || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9090/health || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 45s
     restart: unless-stopped
 
   # Piper TTS Service
@@ -150,7 +148,11 @@ services:
     networks:
       - livekit-network
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import httpx; httpx.get(\"http://localhost:8000/health\", timeout=2).raise_for_status()' || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          'python -c ''import httpx; httpx.get("http://localhost:8000/health", timeout=2).raise_for_status()'' || exit 1',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
