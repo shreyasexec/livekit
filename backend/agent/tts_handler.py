@@ -12,6 +12,10 @@ Based on:
 
 import logging
 import os
+from typing import Optional
+
+import httpx
+from livekit.agents import tts
 
 logger = logging.getLogger(__name__)
 
@@ -19,44 +23,10 @@ logger = logging.getLogger(__name__)
 def create_piper_tts(
     base_url: str = "http://localhost:5500",
     voice: str = "en_US-lessac-medium",
-    **kwargs,
-) -> str:
-    """
-    Create Piper TTS plugin identifier.
-
-    Similar to the STT handler, this returns a configuration that will be
-    used by the custom Piper TTS service.
-
-    Args:
-        base_url: Piper TTS service URL
-        voice: Voice model name
-        **kwargs: Additional arguments
-
-    Returns:
-        Plugin identifier string
-
-    Note:
-        Like the STT plugin, this needs to be integrated with LiveKit's
-        plugin system. For now, we'll use a built-in TTS provider as fallback.
-    """
-    config = {
-        "provider": "piper",
-        "base_url": base_url,
-        "voice": voice,
-    }
-
-    logger.info(f"Piper TTS configuration: {config}")
-
-    # TODO: Implement custom TTS provider class
-    # For now, use a built-in provider as fallback
-    logger.warning(
-        "Custom Piper TTS plugin not yet implemented. "
-        "To use Piper, you need to implement a custom TTS provider class."
-    )
-
-    # Return Cartesia as a fallback (will need API key)
-    # This should be replaced with actual Piper integration
-    return "cartesia/sonic-3:9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
+    sample_rate: int = 22050,
+) -> "PiperTTS":
+    """Factory returning a local Piper TTS instance."""
+    return PiperTTS(base_url=base_url, voice=voice, sample_rate=sample_rate)
 
 
 class PiperTTSClient:
@@ -205,3 +175,50 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
     asyncio.run(test_piper())
+
+
+class PiperTTS(tts.TTS):
+    """
+    LiveKit TTS adapter that uses the local Piper HTTP service.
+    """
+
+    def __init__(self, base_url: str, voice: str, sample_rate: int = 22050):
+        self.base_url = base_url.rstrip("/")
+        self.voice = voice
+        self.sample_rate = sample_rate
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        sample_rate: Optional[int] = None,
+        voice: Optional[str] = None,
+    ) -> tts.Speech:
+        """
+        Synthesize text via Piper HTTP API and return audio to LiveKit.
+        """
+        sr = sample_rate or self.sample_rate
+        chosen_voice = voice or self.voice
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/api/synthesize",
+                    json={
+                        "text": text,
+                        "voice": chosen_voice,
+                        "sample_rate": sr,
+                    },
+                )
+                resp.raise_for_status()
+                audio_data = resp.content
+
+            return tts.Speech(
+                audio=audio_data,
+                sample_rate=sr,
+                num_channels=1,
+                format=tts.AudioFormat.WAV,
+            )
+        except Exception as e:
+            logger.error(f"Piper synth failed: {e}")
+            raise

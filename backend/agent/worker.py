@@ -87,7 +87,7 @@ async def entrypoint(ctx: agents.JobContext):
         piper_url = os.getenv("PIPER_URL", "http://piper-tts:5500")
 
         # Create STT plugin (WhisperLive)
-        stt = create_whisperlive_stt(
+        stt_provider = create_whisperlive_stt(
             host=whisperlive_host,
             port=whisperlive_port,
             lang="en",
@@ -112,7 +112,7 @@ async def entrypoint(ctx: agents.JobContext):
 
         # Create the agent session with full pipeline
         session = AgentSession(
-            stt=stt,
+            stt=stt_provider,
             llm=llm,
             tts=tts,
             vad=silero.VAD.load(),

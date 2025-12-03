@@ -16,12 +16,20 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Optional
+from dataclasses import dataclass
+from typing import AsyncIterator, Optional
 
 import websockets
-import numpy as np
+from livekit.agents import stt
 
 logger = logging.getLogger(__name__)
+
+
+# Simple dataclass to carry STT results to the LiveKit pipeline
+@dataclass
+class WhisperLiveTranscript:
+    text: str
+    is_final: bool = True
 
 
 def create_whisperlive_stt(
@@ -30,60 +38,15 @@ def create_whisperlive_stt(
     lang: str = "en",
     model: str = "small",
     use_vad: bool = True,
-) -> str:
-    """
-    Create WhisperLive STT plugin identifier.
-
-    In LiveKit Agents, plugins are often identified by strings.
-    This function returns a string identifier that will be resolved
-    by the agent framework.
-
-    For custom plugins, we may need to register them with the framework.
-    This is a placeholder implementation that needs validation with
-    the actual SDK version.
-
-    Args:
-        host: WhisperLive server hostname
-        port: WhisperLive server port
-        lang: Language code (en, es, fr, etc.)
-        model: Whisper model size (tiny, base, small, medium, large)
-        use_vad: Enable Voice Activity Detection
-
-    Returns:
-        Plugin identifier string
-
-    Note:
-        The actual implementation may require creating a custom STT class
-        that inherits from a base STT provider class in LiveKit Agents.
-        This needs to be verified against the installed SDK version.
-    """
-    # For now, return a configuration dict that can be used
-    # when the plugin system is properly integrated
-    config = {
-        "provider": "whisperlive",
-        "host": host,
-        "port": port,
-        "lang": lang,
-        "model": model,
-        "use_vad": use_vad,
-    }
-
-    logger.info(f"WhisperLive STT configuration: {config}")
-
-    # TODO: This needs to be replaced with actual plugin registration
-    # For now, we'll need to check if LiveKit Agents supports custom STT plugins
-    # or if we need to use one of the built-in providers
-
-    # WORKAROUND: Use Deepgram or AssemblyAI as fallback if custom plugin not supported
-    # Return a built-in provider for now until custom plugin system is validated
-    logger.warning(
-        "Custom WhisperLive plugin not yet implemented. "
-        "To use WhisperLive, you need to implement a custom STT provider class."
+) -> "WhisperLiveSTT":
+    """Factory returning a local WhisperLive STT instance."""
+    return WhisperLiveSTT(
+        host=host,
+        port=port,
+        lang=lang,
+        model=model,
+        use_vad=use_vad,
     )
-
-    # Return AssemblyAI as a fallback (will need API key)
-    # This should be replaced with actual WhisperLive integration
-    return "assemblyai/universal-streaming:en"
 
 
 class WhisperLiveClient:
@@ -225,6 +188,111 @@ class WhisperLiveClient:
                 logger.warning(f"Error closing WhisperLive connection: {e}")
 
         self.connected = False
+
+
+class WhisperLiveSTT(stt.STT):
+    """
+    LiveKit STT adapter that streams audio to a local WhisperLive server.
+
+    This implements the minimal STT interface expected by LiveKit Agents:
+    - `stream(...)` yields SpeechEvent objects as transcripts arrive.
+    - Audio chunks are pushed into the returned stream via `write`/`flush`.
+    """
+
+    def __init__(
+        self,
+        host: str = "whisperlive",
+        port: int = 9090,
+        lang: str = "en",
+        model: str = "small",
+        use_vad: bool = True,
+    ):
+        self.host = host
+        self.port = port
+        self.lang = lang
+        self.model = model
+        self.use_vad = use_vad
+
+    async def stream(
+        self,
+        *,
+        sample_rate: int,
+        num_channels: int,
+    ) -> AsyncIterator[stt.SpeechEvent]:
+        """
+        Connect to WhisperLive and bridge audio to transcripts.
+        LiveKit Agents will call `write` on the returned stream; we forward
+        those buffers over the WhisperLive websocket and yield SpeechEvents.
+        """
+        client = WhisperLiveClient(
+            host=self.host,
+            port=self.port,
+            lang=self.lang,
+            model=self.model,
+            use_vad=self.use_vad,
+        )
+        await client.connect()
+
+        # Queue for audio frames arriving from LiveKit
+        audio_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+
+        async def sender():
+            while True:
+                chunk = await audio_q.get()
+                if chunk is None:
+                    break
+                try:
+                    await client.send_audio(chunk)
+                except Exception as e:
+                    logger.error(f"WhisperLive send error: {e}")
+                    break
+
+        send_task = asyncio.create_task(sender())
+
+        SpeechStreamBase = getattr(stt, "SpeechStream", object)
+
+        # Nested helper class for the writable stream expected by LiveKit
+        class _Stream(SpeechStreamBase):
+            async def write(self, audio: bytes):
+                await audio_q.put(audio)
+
+            async def aclose(self):
+                await audio_q.put(None)
+                await client.close()
+                send_task.cancel()
+
+        stream = _Stream()
+
+        async def transcript_generator():
+            try:
+                while True:
+                    data = await client.receive_transcription()
+                    if data is None:
+                        break
+
+                    # WhisperLive sends a list of segments; concatenate text
+                    text = ""
+                    if "segments" in data:
+                        text = " ".join(
+                            seg.get("text", "") for seg in data.get("segments", [])
+                        ).strip()
+                    else:
+                        text = data.get("text", "")
+
+                    if not text:
+                        continue
+
+                    yield stt.SpeechEvent(
+                        type=stt.SpeechEventType.FINAL,
+                        alternatives=[stt.SpeechAlternative(text=text)],
+                    )
+            finally:
+                await stream.aclose()
+
+        # The SpeechStream contract is to return an async iterator that yields
+        # events; wrapping generator to supply both iterator and write/close API.
+        stream.__aiter__ = lambda self=stream: transcript_generator()  # type: ignore
+        return stream
 
 
 # Example usage:
