@@ -199,7 +199,7 @@ class PiperTTS(tts.TTS):
     def __init__(self, base_url: str, voice: str, sample_rate: int = 22050):
         self.base_url = base_url.rstrip("/")
         self.voice = voice
-        self.sample_rate = sample_rate
+        self._sample_rate = sample_rate
 
     async def synthesize(
         self,
@@ -211,7 +211,7 @@ class PiperTTS(tts.TTS):
         """
         Synthesize text via Piper HTTP API and return audio to LiveKit.
         """
-        sr = sample_rate or self.sample_rate
+        sr = sample_rate or self._sample_rate
         chosen_voice = voice or self.voice
 
         try:
