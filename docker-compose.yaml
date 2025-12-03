@@ -17,9 +17,10 @@ services:
   livekit:
     image: livekit/livekit-server:latest
     ports:
-      - "7880:7880"
-      - "7881:7881"
       - "50000-50100:50000-50100/udp"
+    expose:
+      - "7880"
+      - "7881"
     volumes:
       - ./configs/livekit.yaml:/livekit.yaml
     command: ["--config", "/livekit.yaml"]
@@ -179,7 +180,7 @@ services:
       dockerfile: Dockerfile.nginx
     ports:
       - "443:443"
-      - "7881:7880"
+      - "7880:7880"
     depends_on:
       - livekit
       - backend
@@ -195,7 +196,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_LIVEKIT_URL=wss://192.168.20.224:7881
+      - VITE_LIVEKIT_URL=wss://192.168.20.224:7880
       - VITE_API_URL=https://192.168.20.224/api
     depends_on:
       backend:
