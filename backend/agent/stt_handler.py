@@ -277,6 +277,7 @@ class WhisperLiveSTT(stt.STT):
 
         sample_rate = kwargs.pop("sample_rate", args[0] if len(args) > 0 else 16000)
         num_channels = kwargs.pop("num_channels", args[1] if len(args) > 1 else 1)
+        _ = sample_rate, num_channels  # currently unused by WhisperLive
 
         @asynccontextmanager
         async def _cm():
@@ -318,17 +319,16 @@ class WhisperLiveSTT(stt.STT):
 
             stream = _Stream()
 
-        async def transcript_generator():
-            try:
-                while True:
-                    try:
-                        data = await client.receive_transcription()
-                    except asyncio.CancelledError:
-                        break
-                    if data is None:
-                        break
+            async def transcript_generator():
+                try:
+                    while True:
+                        try:
+                            data = await client.receive_transcription()
+                        except asyncio.CancelledError:
+                            break
+                        if data is None:
+                            break
 
-                        text = ""
                         if "segments" in data:
                             text = " ".join(
                                 seg.get("text", "") for seg in data.get("segments", [])
