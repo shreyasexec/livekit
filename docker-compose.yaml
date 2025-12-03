@@ -124,7 +124,7 @@ services:
       redis:
         condition: service_healthy
       whisperlive:
-        condition: service_healthy
+        condition: service_started
       piper-tts:
         condition: service_healthy
     command: python -m agent.worker
