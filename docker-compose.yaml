@@ -133,7 +133,13 @@ services:
     #command: ["livekit-agents", "devserver", "agent.worker:server"]
 
     command:
-      ["python", "-m", "livekit.agents.cli", "devserver", "agent.worker:server"]
+      [
+        "python",
+        "-m",
+        "livekit.agents.cli.cli",
+        "devserver",
+        "agent.worker:server",
+      ]
 
     networks:
       - livekit-network
