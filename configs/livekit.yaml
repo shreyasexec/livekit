@@ -4,12 +4,10 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: false
-  node_ip: 192.168.1.100 # replace with your host/LAN IP
-  # For local testing, you can set to the host IP on the Docker bridge if needed
+  node_ip: 192.168.1.100 # set to your host/LAN IP
 redis:
   address: redis:6379
 keys:
-  # Generated API keys - keep these secure!
   1uhwH2Iv3aGFNTCGC3bNv0OhBjsffTdgJJiGDgYfJKw=: vh+pYw6eg1DQaMPZH4tdS3t39fwTRvuA4XEqNF37Mf8=
 logging:
   level: info
@@ -19,8 +17,7 @@ room:
   auto_create: true
   empty_timeout: 300
   max_participants: 50
-  max_duration: 0
 webhook:
   urls:
-    # Add your webhook URLs here if needed
+    # optional
   api_key: 1uhwH2Iv3aGFNTCGC3bNv0OhBjsffTdgJJiGDgYfJKw=

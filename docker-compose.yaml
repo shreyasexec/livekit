@@ -60,8 +60,6 @@ services:
       - "9090"
       - --backend
       - faster_whisper
-      - --faster_whisper_model
-      - small
       - --max_clients
       - "10"
       - --max_connection_time
