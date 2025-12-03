@@ -22,6 +22,12 @@ from typing import AsyncIterator, Optional
 import websockets
 from livekit.agents import stt
 
+# Compatibility shims for older livekit.agents.stt versions
+RecognitionBase = getattr(stt, "Recognition", None)
+SpeechEventBase = getattr(stt, "SpeechEvent", None)
+SpeechAlternative = getattr(stt, "SpeechAlternative", None)
+SpeechEventType = getattr(stt, "SpeechEventType", None)
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,6 +218,30 @@ class WhisperLiveSTT(stt.STT):
         self.lang = lang
         self.model = model
         self.use_vad = use_vad
+
+    async def _recognize_impl(
+        self,
+        audio: bytes,
+        *,
+        sample_rate: int,
+        num_channels: int,
+    ):
+        """
+        Fallback non-streaming recognize; WhisperLive is streaming-only here,
+        so return an empty final alternative to satisfy the abstract interface.
+        """
+        alt_cls = SpeechAlternative or getattr(stt, "SpeechAlternative", None)
+        alt = alt_cls(text="") if alt_cls else None
+
+        if RecognitionBase:
+            return RecognitionBase(alternatives=[alt] if alt else [])
+
+        event_cls = SpeechEventBase or getattr(stt, "SpeechEvent", None)
+        evt_type = SpeechEventType or getattr(stt, "SpeechEventType", None)
+        if event_cls and evt_type:
+            return event_cls(type=evt_type.FINAL, alternatives=[alt] if alt else [])
+
+        return None
 
     async def stream(
         self,
