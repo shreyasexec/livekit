@@ -306,9 +306,7 @@ class WhisperLiveSTT(stt.STT):
 
             send_task = asyncio.create_task(sender())
 
-            SpeechStreamBase = getattr(stt, "SpeechStream", object)
-
-            class _Stream(SpeechStreamBase):
+            class _Stream:
                 async def write(self, audio: bytes):
                     await audio_q.put(audio)
 
