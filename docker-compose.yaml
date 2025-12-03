@@ -133,6 +133,7 @@ services:
     #command: ["livekit-agents", "devserver", "agent.worker:server"]
     command:
       ["/usr/local/bin/livekit-agents", "devserver", "agent.worker:server"]
+
     networks:
       - livekit-network
     restart: unless-stopped

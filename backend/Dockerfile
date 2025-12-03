@@ -17,7 +17,12 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+#RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Python dependencies (ensures console scripts are created)
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir livekit-agents
+
 
 # Copy application code
 COPY . .
