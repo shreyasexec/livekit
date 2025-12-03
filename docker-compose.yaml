@@ -127,7 +127,7 @@ services:
         condition: service_started
       piper-tts:
         condition: service_healthy
-    command: ["python", "-m", "livekit.agents.cli", "devserver", "agent.worker:server"]
+    command: ["livekit-agents", "devserver", "agent.worker:server"]
     networks:
       - livekit-network
     restart: unless-stopped
