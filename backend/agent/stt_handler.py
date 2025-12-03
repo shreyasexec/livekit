@@ -184,15 +184,18 @@ class WhisperLiveClient:
 
     async def close(self):
         """Close the connection to WhisperLive."""
-        if self.ws and not self.ws.closed:
+        if self.ws:
             try:
                 # Send EOF signal
                 await self.ws.send(json.dumps({"eof": True}))
+            except Exception:
+                pass
+            try:
+                # Some websocket impls don't expose `.closed`; just close best-effort.
                 await self.ws.close()
                 logger.info("WhisperLive connection closed")
             except Exception as e:
                 logger.warning(f"Error closing WhisperLive connection: {e}")
-
         self.connected = False
 
 
