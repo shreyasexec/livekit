@@ -42,15 +42,15 @@ echo.
 echo Starting all services...
 echo.
 
-docker-compose up -d
+docker compose up -d
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to start services!
     echo.
     echo Troubleshooting steps:
     echo 1. Check Docker Desktop is running
-    echo 2. Run: docker-compose down
-    echo 3. Run: docker-compose up -d
+    echo 2. Run: docker compose down
+    echo 3. Run: docker compose up -d
     echo.
     pause
     exit /b 1
@@ -64,7 +64,7 @@ echo.
 echo ============================================================
 echo Service Status:
 echo ============================================================
-docker-compose ps
+docker compose ps
 
 echo.
 echo ============================================================
@@ -92,10 +92,10 @@ echo.
 echo ============================================================
 echo Useful Commands:
 echo ============================================================
-echo - View all logs: docker-compose logs -f
-echo - View agent logs: docker-compose logs -f agent-worker
-echo - Stop services: docker-compose down
-echo - Restart services: docker-compose restart
+echo - View all logs: docker compose logs -f
+echo - View agent logs: docker compose logs -f agent-worker
+echo - Stop services: docker compose down
+echo - Restart services: docker compose restart
 echo.
 echo ============================================================
 echo.
@@ -103,9 +103,9 @@ echo Services started successfully!
 echo.
 set /p VIEWLOGS="View logs now? (y/n): "
 if /i "%VIEWLOGS%"=="y" (
-    docker-compose logs -f
+    docker compose logs -f
 ) else (
     echo.
-    echo To view logs later, run: docker-compose logs -f
+    echo To view logs later, run: docker compose logs -f
     echo.
 )

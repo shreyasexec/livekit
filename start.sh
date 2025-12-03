@@ -34,7 +34,7 @@ echo
 echo "Starting all services..."
 echo
 
-docker-compose up -d
+docker compose up -d
 
 echo
 echo "Waiting for services to start..."
@@ -44,7 +44,7 @@ echo
 echo "============================================================"
 echo "Service Status:"
 echo "============================================================"
-docker-compose ps
+docker compose ps
 
 echo
 echo "============================================================"
@@ -58,12 +58,12 @@ echo
 echo "============================================================"
 echo "Logs:"
 echo "============================================================"
-echo "To view logs, run: docker-compose logs -f"
-echo "To view agent logs: docker-compose logs -f agent-worker"
+echo "To view logs, run: docker compose logs -f"
+echo "To view agent logs: docker compose logs -f agent-worker"
 echo
 echo "Press Ctrl+C to stop viewing logs, then run:"
-echo "  docker-compose logs -f"
+echo "  docker compose logs -f"
 echo
 
 # Follow logs
-docker-compose logs -f
+docker compose logs -f
