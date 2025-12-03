@@ -128,7 +128,7 @@ async def entrypoint(ctx: agents.JobContext):
             )
 
             # Check if this is a SIP caller
-            if participant.kind == rtc.ParticipantKind.SIP:
+            if hasattr(rtc, "ParticipantKind") and getattr(rtc.ParticipantKind, "SIP", None) is not None and participant.kind == rtc.ParticipantKind.SIP:
                 logger.info("SIP caller joined - agent will respond to their audio")
 
         @ctx.room.on("participant_disconnected")
