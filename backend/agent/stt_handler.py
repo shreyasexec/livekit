@@ -309,6 +309,25 @@ class WhisperLiveSTT(stt.STT):
                 async def write(self, audio: bytes):
                     await audio_q.put(audio)
 
+                async def push_frame(self, frame):
+                    """
+                    Adapter used by LiveKit Agents to feed raw audio frames.
+                    Accepts bytes/bytearray/memoryview or objects exposing `.data`/`.pcm`.
+                    """
+                    try:
+                        if isinstance(frame, (bytes, bytearray, memoryview)):
+                            audio = bytes(frame)
+                        elif hasattr(frame, "data"):
+                            audio = bytes(frame.data)
+                        elif hasattr(frame, "pcm"):
+                            audio = bytes(frame.pcm)
+                        else:
+                            logger.debug("Unknown frame type for STT; skipping")
+                            return
+                        await audio_q.put(audio)
+                    except Exception as e:
+                        logger.error(f"Failed to push frame to WhisperLive: {e}")
+
                 async def aclose(self):
                     await audio_q.put(None)
                     await client.close()
