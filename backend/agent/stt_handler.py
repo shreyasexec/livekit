@@ -271,6 +271,7 @@ class WhisperLiveSTT(stt.STT):
         *,
         sample_rate: int,
         num_channels: int,
+        **_kwargs,
     ) -> AsyncIterator[stt.SpeechEvent]:
         """
         Connect to WhisperLive and bridge audio to transcripts.
@@ -313,6 +314,12 @@ class WhisperLiveSTT(stt.STT):
                 await audio_q.put(None)
                 await client.close()
                 send_task.cancel()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                await self.aclose()
 
         stream = _Stream()
 
