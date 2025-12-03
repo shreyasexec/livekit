@@ -132,14 +132,7 @@ services:
         condition: service_healthy
     #command: ["livekit-agents", "devserver", "agent.worker:server"]
 
-    command:
-      [
-        "python",
-        "-m",
-        "livekit.agents.cli.cli",
-        "devserver",
-        "agent.worker:server",
-      ]
+    command: ["python", "agent/worker.py", "dev"]
 
     networks:
       - livekit-network
@@ -186,6 +179,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+      - "3001:3000"
     environment:
       - VITE_LIVEKIT_URL=${VITE_LIVEKIT_URL:-ws://localhost:7880}
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
