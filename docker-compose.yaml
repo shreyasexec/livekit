@@ -127,7 +127,7 @@ services:
         condition: service_started
       piper-tts:
         condition: service_healthy
-    command: python -m agent.worker run
+    command: python -m agent.worker devserver
     networks:
       - livekit-network
     restart: unless-stopped
