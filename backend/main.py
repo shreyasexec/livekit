@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Get configuration from environment
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "http://livekit:7880")
+# Public URL (used in tokens/WS returned to browser)
+LIVEKIT_PUBLIC_URL = os.getenv("LIVEKIT_PUBLIC_URL", LIVEKIT_URL)
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 
@@ -158,7 +160,7 @@ async def generate_token(request: TokenRequest):
 
         return TokenResponse(
             token=jwt_token,
-            url=LIVEKIT_URL.replace("http", "ws"),
+            url=LIVEKIT_PUBLIC_URL.replace("http", "ws"),
         )
 
     except Exception as e:

@@ -202,7 +202,10 @@ async def entrypoint(ctx: agents.JobContext):
 
         # Wait for the session to complete
         # The session will handle the voice pipeline automatically
-        while not session.is_closed:
+        # Newer AgentSession exposes `closed`; older may expose `is_closed`.
+        while True:
+            if getattr(session, "closed", False) or getattr(session, "is_closed", False):
+                break
             await asyncio.sleep(1)
 
         logger.info("Agent session ended")

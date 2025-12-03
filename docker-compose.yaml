@@ -114,7 +114,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_URL=http://livekit:7880
+      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
@@ -150,6 +151,7 @@ services:
       - "8000:8000"
     environment:
       - LIVEKIT_URL=http://livekit:7880
+      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
