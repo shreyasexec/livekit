@@ -216,7 +216,7 @@ class WhisperLiveSTT(stt.STT):
         self.host = host
         self.port = port
         self.lang = lang
-        self.model = model
+        self._wl_model = model
         self.use_vad = use_vad
 
     async def _recognize_impl(
@@ -258,7 +258,7 @@ class WhisperLiveSTT(stt.STT):
             host=self.host,
             port=self.port,
             lang=self.lang,
-            model=self.model,
+            model=self._wl_model,
             use_vad=self.use_vad,
         )
         await client.connect()
