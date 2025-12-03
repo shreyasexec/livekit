@@ -131,8 +131,9 @@ services:
       piper-tts:
         condition: service_healthy
     #command: ["livekit-agents", "devserver", "agent.worker:server"]
+
     command:
-      ["/usr/local/bin/livekit-agents", "devserver", "agent.worker:server"]
+      ["python", "-m", "livekit.agents.cli", "devserver", "agent.worker:server"]
 
     networks:
       - livekit-network
