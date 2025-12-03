@@ -268,11 +268,12 @@ class WhisperLiveSTT(stt.STT):
 
     async def stream(
         self,
-        *,
-        sample_rate: int,
-        num_channels: int,
-        **_kwargs,
+        *args,
+        **kwargs,
     ) -> AsyncIterator[stt.SpeechEvent]:
+        # Accept both positional and keyword forms; extract sample_rate/num_channels if present
+        sample_rate = kwargs.pop("sample_rate", args[0] if len(args) > 0 else 16000)
+        num_channels = kwargs.pop("num_channels", args[1] if len(args) > 1 else 1)
         """
         Connect to WhisperLive and bridge audio to transcripts.
         LiveKit Agents will call `write` on the returned stream; we forward
