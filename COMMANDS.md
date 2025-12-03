@@ -2,26 +2,34 @@
 
 ## 🚀 Starting Services
 
-### Start Everything
+### Start Everything (Recommended)
 ```bash
 docker compose up -d
 ```
 
+This will start ALL services automatically:
+- ✅ Redis
+- ✅ LiveKit Server
+- ✅ LiveKit SIP (for Linphone calling)
+- ✅ WhisperLive STT
+- ✅ Piper TTS
+- ✅ AI Agent Worker
+- ✅ FastAPI Backend
+- ✅ React Frontend (available at http://localhost:3000)
+
 ### Start Specific Services
 ```bash
-# Backend services only
-docker compose up -d redis livekit backend
+# Core services only (no AI)
+docker compose up -d redis livekit backend frontend
 
 # AI pipeline only
 docker compose up -d whisperlive piper-tts agent-worker
 
 # Frontend only
 docker compose up -d frontend
-```
 
-### Start with SIP
-```bash
-docker compose --profile sip up -d
+# Without SIP
+docker compose up -d redis livekit whisperlive piper-tts agent-worker backend frontend
 ```
 
 ---

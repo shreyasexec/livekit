@@ -59,23 +59,35 @@ chmod +x start.sh
 # Pre-pull WhisperLive image (fixes EOF error)
 docker pull ghcr.io/collabora/whisperlive-cpu:latest
 
-# Start all services
-docker-compose up -d
+# Start all services (includes SIP + Frontend automatically)
+docker compose up -d
 ```
+
+This will start:
+- ✅ All backend services (Redis, LiveKit, Backend API)
+- ✅ All AI services (WhisperLive, Piper TTS, Agent Worker)
+- ✅ SIP server (for Linphone calling)
+- ✅ Frontend (React web UI at http://localhost:3000)
 
 ### Step 3: Verify (30 seconds)
 
 ```bash
 # Check all services are running
-docker-compose ps
+docker compose ps
 
 # Test the backend API
 curl http://localhost:8000/health
+
+# Check frontend is accessible
+curl http://localhost:3000
 ```
 
 Expected output:
-```json
+```bash
+# Backend health check:
 {"status":"ok","service":"Trinity LiveKit API","timestamp":"...","livekit_url":"..."}
+
+# Frontend should return HTML
 ```
 
 ---
