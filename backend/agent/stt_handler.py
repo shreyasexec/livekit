@@ -221,6 +221,21 @@ class WhisperLiveSTT(stt.STT):
         if not hasattr(self, "_events"):
             self._events = {}
 
+        # Declare capabilities so AgentSession knows this STT supports streaming
+        Cap = getattr(stt, "Capabilities", None)
+        if Cap:
+            self._capabilities = Cap(
+                streaming=True,
+                interim_results=True,
+                metrics=True,
+            )
+        else:
+            self._capabilities = type(
+                "Caps",
+                (),
+                {"streaming": True, "interim_results": True, "metrics": True},
+            )()
+
         self.host = host
         self.port = port
         self.lang = lang
