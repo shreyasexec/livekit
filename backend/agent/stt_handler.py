@@ -266,94 +266,93 @@ class WhisperLiveSTT(stt.STT):
 
         return None
 
-    async def stream(
+    def stream(
         self,
         *args,
         **kwargs,
     ) -> AsyncIterator[stt.SpeechEvent]:
-        # Accept both positional and keyword forms; extract sample_rate/num_channels if present
+        """
+        Async context manager that yields a writable SpeechStream.
+        Accepts positional or keyword sample_rate/num_channels (defaults provided).
+        """
+        from contextlib import asynccontextmanager
+
         sample_rate = kwargs.pop("sample_rate", args[0] if len(args) > 0 else 16000)
         num_channels = kwargs.pop("num_channels", args[1] if len(args) > 1 else 1)
-        """
-        Connect to WhisperLive and bridge audio to transcripts.
-        LiveKit Agents will call `write` on the returned stream; we forward
-        those buffers over the WhisperLive websocket and yield SpeechEvents.
-        """
-        client = WhisperLiveClient(
-            host=self.host,
-            port=self.port,
-            lang=self.lang,
-            model=self._wl_model,
-            use_vad=self.use_vad,
-        )
-        await client.connect()
 
-        # Queue for audio frames arriving from LiveKit
-        audio_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        @asynccontextmanager
+        async def _cm():
+            client = WhisperLiveClient(
+                host=self.host,
+                port=self.port,
+                lang=self.lang,
+                model=self._wl_model,
+                use_vad=self.use_vad,
+            )
+            await client.connect()
 
-        async def sender():
-            while True:
-                chunk = await audio_q.get()
-                if chunk is None:
-                    break
-                try:
-                    await client.send_audio(chunk)
-                except Exception as e:
-                    logger.error(f"WhisperLive send error: {e}")
-                    break
+            audio_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
 
-        send_task = asyncio.create_task(sender())
-
-        SpeechStreamBase = getattr(stt, "SpeechStream", object)
-
-        # Nested helper class for the writable stream expected by LiveKit
-        class _Stream(SpeechStreamBase):
-            async def write(self, audio: bytes):
-                await audio_q.put(audio)
-
-            async def aclose(self):
-                await audio_q.put(None)
-                await client.close()
-                send_task.cancel()
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                await self.aclose()
-
-        stream = _Stream()
-
-        async def transcript_generator():
-            try:
+            async def sender():
                 while True:
-                    data = await client.receive_transcription()
-                    if data is None:
+                    chunk = await audio_q.get()
+                    if chunk is None:
+                        break
+                    try:
+                        await client.send_audio(chunk)
+                    except Exception as e:
+                        logger.error(f"WhisperLive send error: {e}")
                         break
 
-                    # WhisperLive sends a list of segments; concatenate text
-                    text = ""
-                    if "segments" in data:
-                        text = " ".join(
-                            seg.get("text", "") for seg in data.get("segments", [])
-                        ).strip()
-                    else:
-                        text = data.get("text", "")
+            send_task = asyncio.create_task(sender())
 
-                    if not text:
-                        continue
+            SpeechStreamBase = getattr(stt, "SpeechStream", object)
 
-                    yield stt.SpeechEvent(
-                        type=stt.SpeechEventType.FINAL,
-                        alternatives=[stt.SpeechAlternative(text=text)],
-                    )
+            class _Stream(SpeechStreamBase):
+                async def write(self, audio: bytes):
+                    await audio_q.put(audio)
+
+                async def aclose(self):
+                    await audio_q.put(None)
+                    await client.close()
+                    send_task.cancel()
+
+                def __aiter__(self):
+                    return transcript_generator()
+
+            stream = _Stream()
+
+            async def transcript_generator():
+                try:
+                    while True:
+                        data = await client.receive_transcription()
+                        if data is None:
+                            break
+
+                        text = ""
+                        if "segments" in data:
+                            text = " ".join(
+                                seg.get("text", "") for seg in data.get("segments", [])
+                            ).strip()
+                        else:
+                            text = data.get("text", "")
+
+                        if not text:
+                            continue
+
+                        yield stt.SpeechEvent(
+                            type=stt.SpeechEventType.FINAL,
+                            alternatives=[stt.SpeechAlternative(text=text)],
+                        )
+                finally:
+                    await stream.aclose()
+
+            try:
+                yield stream
             finally:
                 await stream.aclose()
 
-        # The SpeechStream contract is to return an async iterator that yields
-        # events; wrapping generator to supply both iterator and write/close API.
-        stream.__aiter__ = lambda self=stream: transcript_generator()  # type: ignore
-        return stream
+        return _cm()
 
 
 # Example usage:
