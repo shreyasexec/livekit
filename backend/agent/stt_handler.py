@@ -186,12 +186,7 @@ class WhisperLiveClient:
         """Close the connection to WhisperLive."""
         if self.ws:
             try:
-                # Send EOF signal
-                await self.ws.send(json.dumps({"eof": True}))
-            except Exception:
-                pass
-            try:
-                # Some websocket impls don't expose `.closed`; just close best-effort.
+                # Best-effort close (no EOF frame to avoid type errors on server)
                 await self.ws.close()
                 logger.info("WhisperLive connection closed")
             except Exception as e:
@@ -323,12 +318,15 @@ class WhisperLiveSTT(stt.STT):
 
             stream = _Stream()
 
-            async def transcript_generator():
-                try:
-                    while True:
+        async def transcript_generator():
+            try:
+                while True:
+                    try:
                         data = await client.receive_transcription()
-                        if data is None:
-                            break
+                    except asyncio.CancelledError:
+                        break
+                    if data is None:
+                        break
 
                         text = ""
                         if "segments" in data:
