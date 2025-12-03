@@ -1,0 +1,12 @@
+log_level: debug
+api_key: 1uhwH2Iv3aGFNTCGC3bNv0OhBjsffTdgJJiGDgYfJKw=
+api_secret: vh+pYw6eg1DQaMPZH4tdS3t39fwTRvuA4XEqNF37Mf8=
+ws_url: ws://livekit:7880
+redis:
+  address: redis:6379
+sip_port: 5060
+rtp_port_range_start: 10000
+rtp_port_range_end: 20000
+use_external_ip: true
+# For local testing
+# local_ip: 192.168.1.100

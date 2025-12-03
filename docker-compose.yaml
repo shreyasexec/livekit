@@ -1,0 +1,166 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - livekit-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  livekit:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./configs/livekit.yaml:/livekit.yaml
+    command: --config /livekit.yaml
+    environment:
+      - LIVEKIT_CONFIG=/livekit.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - livekit-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:7880 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  livekit-sip:
+    image: livekit/sip:latest
+    network_mode: host
+    volumes:
+      - ./configs/sip.yaml:/sip.yaml
+    environment:
+      - SIP_CONFIG_FILE=/sip.yaml
+    restart: unless-stopped
+    profiles:
+      - sip
+
+  # WhisperLive STT Service - CPU version (works on Windows & Ubuntu)
+  whisperlive:
+    image: ghcr.io/collabora/whisperlive-cpu:latest
+    ports:
+      - "9090:9090"
+    environment:
+      - OMP_NUM_THREADS=4
+    command:
+      - python3
+      - run_server.py
+      - --port
+      - "9090"
+      - --backend
+      - faster_whisper
+      - --model
+      - small
+      - --max_clients
+      - "10"
+      - --max_connection_time
+      - "600"
+    networks:
+      - livekit-network
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\", 9090)); s.close()' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Piper TTS Service
+  piper-tts:
+    build:
+      context: ./tts-service
+      dockerfile: Dockerfile
+    ports:
+      - "5500:5500"
+    volumes:
+      - piper_voices:/app/voices
+    environment:
+      - PIPER_VOICE=en_US-lessac-medium
+    networks:
+      - livekit-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5500/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # AI Agent Worker
+  agent-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - WHISPERLIVE_HOST=whisperlive
+      - WHISPERLIVE_PORT=9090
+      - PIPER_URL=http://piper-tts:5500
+    depends_on:
+      livekit:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      whisperlive:
+        condition: service_healthy
+      piper-tts:
+        condition: service_healthy
+    command: python -m agent.worker
+    networks:
+      - livekit-network
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - LIVEKIT_URL=http://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      livekit:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    networks:
+      - livekit-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import httpx; httpx.get(\"http://localhost:8000/health\", timeout=2).raise_for_status()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  livekit-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  piper_voices:
