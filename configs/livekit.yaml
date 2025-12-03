@@ -4,7 +4,7 @@ rtc:
   port_range_start: 50000
   port_range_end: 50100
   use_external_ip: false
-  node_ip: 192.168.1.100 # set to your host/LAN IP
+  #node_ip: 192.168.1.100 # set to your host/LAN IP
 redis:
   address: redis:6379
 keys:

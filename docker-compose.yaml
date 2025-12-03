@@ -1,12 +1,9 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    network_mode: host
     volumes:
       - redis_data:/data
-    networks:
-      - livekit-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -16,24 +13,15 @@ services:
 
   livekit:
     image: livekit/livekit-server:latest
-    ports:
-      - "50000-50100:50000-50100/udp"
-    expose:
-      - "7880"
-      - "7881"
+    network_mode: host
+    environment:
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}
     volumes:
       - ./configs/livekit.yaml:/livekit.yaml
-    command: ["--config", "/livekit.yaml"]
+    command: ["--config", "/livekit.yaml", "--node-ip", "${LIVEKIT_NODE_IP}"]
     depends_on:
       redis:
         condition: service_healthy
-    networks:
-      - livekit-network
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:7880 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     restart: unless-stopped
 
   livekit-sip:
@@ -48,13 +36,9 @@ services:
     profiles:
       - sip
 
-    # Removed profiles to auto-start with docker compose up
-
-  # WhisperLive STT Service - CPU version
   whisperlive:
     image: ghcr.io/collabora/whisperlive-cpu:latest
-    ports:
-      - "9090:9090"
+    network_mode: host
     environment:
       - OMP_NUM_THREADS=4
     command:
@@ -69,37 +53,25 @@ services:
       - "10"
       - --max_connection_time
       - "600"
-    networks:
-      - livekit-network
     healthcheck:
       test:
         - CMD-SHELL
-        - python3 - <<'PY'
-          import socket
-          s = socket.socket()
-          s.settimeout(2)
-          s.connect(("localhost", 9090))
-          s.close()
-          PY
+        - python3 -c "import socket; s = socket.socket(); s.settimeout(2); s.connect(('localhost', 9090)); s.close()"
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 45s
     restart: unless-stopped
 
-  # Piper TTS Service
   piper-tts:
     build:
       context: ./tts-service
       dockerfile: Dockerfile
-    ports:
-      - "5500:5500"
+    network_mode: host
     volumes:
       - piper_voices:/app/voices
     environment:
       - PIPER_VOICE=en_US-lessac-medium
-    networks:
-      - livekit-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5500/health || exit 1"]
       interval: 10s
@@ -108,61 +80,45 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # AI Agent Worker
   agent-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    network_mode: host
     environment:
-      - LIVEKIT_URL=http://livekit:7880
-      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
+      - LIVEKIT_URL=ws://127.0.0.1:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
-      - WHISPERLIVE_HOST=whisperlive
+      - REDIS_URL=redis://127.0.0.1:6379
+      - OLLAMA_URL=${OLLAMA_URL}
+      - WHISPERLIVE_HOST=127.0.0.1
       - WHISPERLIVE_PORT=9090
-      - PIPER_URL=http://piper-tts:5500
+      - PIPER_URL=http://127.0.0.1:5500
     depends_on:
-      livekit:
-        condition: service_healthy
       redis:
         condition: service_healthy
       whisperlive:
-        condition: service_started
+        condition: service_healthy
       piper-tts:
         condition: service_healthy
-    #command: ["livekit-agents", "devserver", "agent.worker:server"]
-
     command: ["python", "-m", "agent.worker", "dev"]
-
-    networks:
-      - livekit-network
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
-  # FastAPI Backend
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile.api
-    ports:
-      - "8000:8000"
+    network_mode: host
     environment:
-      - LIVEKIT_URL=http://livekit:7880
-      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
+      - LIVEKIT_URL=http://127.0.0.1:7880
+      - LIVEKIT_PUBLIC_URL=wss://${LIVEKIT_NODE_IP}:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://127.0.0.1:6379
     depends_on:
-      livekit:
-        condition: service_healthy
       redis:
         condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8000
-    networks:
-      - livekit-network
     healthcheck:
       test:
         [
@@ -175,41 +131,25 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # NGINX SSL Proxy
   nginx:
     build:
       context: .
       dockerfile: Dockerfile.nginx
-    ports:
-      - "443:443"
-      - "7880:7880"
-    depends_on:
-      - livekit
-      - backend
-    networks:
-      - livekit-network
+    network_mode: host
     restart: unless-stopped
 
-  # React Frontend
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
+      args:
+        - VITE_LIVEKIT_URL=${VITE_LIVEKIT_URL}
+        - VITE_API_URL=${VITE_API_URL}
+    network_mode: host
     environment:
-      - VITE_LIVEKIT_URL=wss://192.168.20.224:7880
-      - VITE_API_URL=https://192.168.20.224
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - livekit-network
+      - VITE_LIVEKIT_URL=${VITE_LIVEKIT_URL}
+      - VITE_API_URL=${VITE_API_URL}
     restart: unless-stopped
-
-networks:
-  livekit-network:
-    driver: bridge
 
 volumes:
   redis_data:
