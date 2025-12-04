@@ -1,10 +1,9 @@
 import { useState } from 'react'
-import { LiveKitRoom, RoomAudioRenderer, VideoConference } from '@livekit/components-react'
+import VoiceAgent from './components/VoiceAgent'
 import '@livekit/components-styles'
 import './App.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL || 'ws://localhost:7880'
 
 interface TokenResponse {
   token: string
@@ -15,6 +14,7 @@ function App() {
   const [roomName, setRoomName] = useState('')
   const [participantName, setParticipantName] = useState('')
   const [token, setToken] = useState('')
+  const [serverUrl, setServerUrl] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState('')
 
@@ -45,6 +45,7 @@ function App() {
 
       const data: TokenResponse = await response.json()
       setToken(data.token)
+      setServerUrl(data.url)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect')
       setConnecting(false)
@@ -53,24 +54,17 @@ function App() {
 
   const handleDisconnect = () => {
     setToken('')
+    setServerUrl('')
     setConnecting(false)
   }
 
-  if (token) {
+  if (token && serverUrl) {
     return (
-      <div className="room-container">
-        <LiveKitRoom
-          token={token}
-          serverUrl={LIVEKIT_URL}
-          connect={true}
-          audio={true}
-          video={true}
-          onDisconnected={handleDisconnect}
-        >
-          <VideoConference />
-          <RoomAudioRenderer />
-        </LiveKitRoom>
-      </div>
+      <VoiceAgent
+        token={token}
+        serverUrl={serverUrl}
+        onDisconnect={handleDisconnect}
+      />
     )
   }
 

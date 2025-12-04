@@ -18,12 +18,21 @@ services:
     image: livekit/livekit-server:latest
     ports:
       - "50000-50100:50000-50100/udp"
+      - "3478:3478"
     expose:
       - "7880"
       - "7881"
     volumes:
       - ./configs/livekit.yaml:/livekit.yaml
     command: ["--config", "/livekit.yaml"]
+    environment:
+      - LIVEKIT_RTC_NODE_IP=${LIVEKIT_NODE_IP}
+      - LIVEKIT_RTC_USE_EXTERNAL_IP=false
+      - LIVEKIT_TURN_ENABLED=true
+      - LIVEKIT_TURN_DOMAIN=${LIVEKIT_TURN_DOMAIN}
+      - LIVEKIT_TURN_SECRET=${LIVEKIT_TURN_SECRET}
+      - LIVEKIT_TURN_UDP_PORT=3478
+      - LIVEKIT_TURN_TLS_PORT=0
     depends_on:
       redis:
         condition: service_healthy
@@ -120,6 +129,7 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
       - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
       - WHISPERLIVE_HOST=whisperlive
       - WHISPERLIVE_PORT=9090
       - PIPER_URL=http://piper-tts:5500

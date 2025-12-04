@@ -154,13 +154,18 @@ async def generate_token(request: TokenRequest):
 
         jwt_token = token.to_jwt()
 
+        # Generate WebSocket URL from public URL
+        ws_url = LIVEKIT_PUBLIC_URL.replace("http", "ws")
+
         logger.info(
             f"Token generated successfully for {request.participant_name}"
         )
+        logger.info(f"LIVEKIT_PUBLIC_URL: {LIVEKIT_PUBLIC_URL}")
+        logger.info(f"WebSocket URL: {ws_url}")
 
         return TokenResponse(
             token=jwt_token,
-            url=LIVEKIT_PUBLIC_URL.replace("http", "ws"),
+            url=ws_url,
         )
 
     except Exception as e:

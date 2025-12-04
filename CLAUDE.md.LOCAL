@@ -1,0 +1,574 @@
+# LiveKit AI Voice Agent - 100% LOCAL OPEN-SOURCE SETUP
+
+## 🎯 Overview
+
+This is a **completely local, open-source** LiveKit AI voice agent implementation. **NO cloud services, NO API keys required!**
+
+### Technology Stack (All Local)
+
+| Component | Technology | Purpose | Port |
+|-----------|------------|---------|------|
+| **WebRTC Server** | LiveKit Server | Audio/video streaming | 7880/7881 |
+| **Speech-to-Text** | WhisperLive | Real-time transcription | 9090 |
+| **Language Model** | Ollama (Llama 3.1) | AI conversation | 11434 |
+| **Text-to-Speech** | Piper TTS | Voice synthesis | 5500 |
+| **Voice Activity** | Silero VAD | Detect speech | - |
+| **Backend API** | FastAPI | Token generation | 8000 |
+| **Frontend** | React + TypeScript | Web interface | 3000 |
+| **Message Broker** | Redis | State management | 6379 |
+
+## 🏗️ Architecture
+
+```
+User Browser (http://localhost:3000)
+         ↓
+    LiveKit Room (ws://localhost:7880)
+         ↓
+    AI Agent Worker
+         ↓
+Voice Pipeline:
+Audio → VAD (Silero) → STT (WhisperLive:9090) → LLM (Ollama:11434) → TTS (Piper:5500) → Audio
+```
+
+### How It Works
+
+1. **User joins room** via React frontend
+2. **Agent auto-joins** the same room
+3. **User speaks** → Audio sent to LiveKit room
+4. **Pipeline processes**:
+   - **VAD** detects when user is speaking
+   - **WhisperLive** transcribes speech to text
+   - **Ollama** generates intelligent response
+   - **Piper** converts response to speech
+5. **Agent speaks** → User hears response in real-time
+
+## 📋 Prerequisites
+
+Before starting, ensure you have:
+
+### 1. Ollama Installed & Running
+
+```bash
+# Check if Ollama is installed
+ollama --version
+
+# Pull the model if not already done
+ollama pull llama3.1:8b
+
+# Verify model is available
+ollama list
+
+# Test Ollama is working
+curl http://localhost:11434/api/tags
+```
+
+### 2. Docker & Docker Compose
+
+```bash
+# Check Docker
+docker --version
+docker-compose --version
+```
+
+## 🚀 Quick Start (Production Mode)
+
+### Step 1: Start All Services
+
+```bash
+cd /home/livekit_vibe/livekit
+
+# Stop any running services first
+docker-compose down
+
+# Build and start all services
+docker-compose up -d --build
+
+# This starts:
+# - LiveKit Server
+# - Redis
+# - WhisperLive STT
+# - Piper TTS
+# - AI Agent Worker
+# - FastAPI Backend
+# - React Frontend
+# - Nginx Proxy
+```
+
+### Step 2: Verify Services Are Running
+
+```bash
+# Check all services are healthy
+docker-compose ps
+
+# Should show:
+# ✓ livekit (healthy)
+# ✓ redis (healthy)
+# ✓ whisperlive (healthy)
+# ✓ piper-tts (healthy)
+# ✓ agent-worker (running)
+# ✓ backend (healthy)
+# ✓ frontend (running)
+# ✓ nginx (running)
+
+# Check agent worker logs
+docker-compose logs -f agent-worker
+
+# Look for:
+# "✓ AGENT SESSION STARTED SUCCESSFULLY"
+# "ALL SERVICES ARE LOCAL - NO CLOUD DEPENDENCIES"
+```
+
+### Step 3: Test the Agent
+
+```bash
+# Open browser
+http://localhost:3000
+
+# Or if using HTTPS:
+https://192.168.20.224
+
+# Enter:
+# - Room name: "test-room"
+# - Your name: "User1"
+# - Click "Join Room"
+
+# You should hear the agent greet you!
+```
+
+## 🔧 Development Mode
+
+For development with hot-reload:
+
+```bash
+# Terminal 1: Backend API
+cd backend
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Terminal 2: Frontend
+cd frontend
+npm install
+npm run dev
+
+# Terminal 3: Agent Worker
+cd backend
+python -m agent.worker dev
+
+# This allows you to edit code and see changes immediately
+```
+
+## 📁 Project Structure
+
+```
+livekit/
+├── backend/
+│   ├── agent/
+│   │   ├── worker.py           # Main agent (uses custom STT/TTS nodes)
+│   │   ├── stt_handler.py      # WhisperLive integration
+│   │   └── tts_handler.py      # Piper TTS integration
+│   ├── main.py                 # FastAPI server
+│   ├── requirements.txt        # Python dependencies
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx             # Main React app
+│   │   └── components/         # UI components
+│   ├── package.json
+│   └── Dockerfile
+├── tts-service/
+│   ├── api_server.py           # Piper TTS HTTP server
+│   └── Dockerfile
+├── configs/
+│   ├── livekit.yaml            # LiveKit server config
+│   └── sip.yaml                # SIP config (if needed)
+├── docker-compose.yaml         # Service orchestration
+├── .env                        # Environment variables
+└── CLAUDE.md.LOCAL             # This file
+```
+
+## 🔍 Troubleshooting
+
+### Issue 1: Agent Not Joining Room
+
+**Symptoms**: Room opens but no agent greeting
+
+**Check**:
+```bash
+# 1. Check agent worker logs
+docker-compose logs agent-worker
+
+# 2. Check LiveKit server logs
+docker-compose logs livekit
+
+# 3. Verify Redis is running
+docker-compose logs redis
+```
+
+**Fix**:
+```bash
+# Restart agent worker
+docker-compose restart agent-worker
+
+# Check for errors in logs
+docker-compose logs --tail=50 agent-worker
+```
+
+### Issue 2: WhisperLive Not Working
+
+**Symptoms**: Agent joins but doesn't respond to speech
+
+**Check**:
+```bash
+# Check WhisperLive logs
+docker-compose logs whisperlive
+
+# Look for "INFO:root:New client connected"
+```
+
+**Fix**:
+```bash
+# Restart WhisperLive
+docker-compose restart whisperlive
+
+# Wait 30 seconds for model to load
+sleep 30
+
+# Restart agent worker
+docker-compose restart agent-worker
+```
+
+### Issue 3: Piper TTS Not Working
+
+**Symptoms**: Agent listens but doesn't speak back
+
+**Check**:
+```bash
+# Check Piper logs
+docker-compose logs piper-tts
+
+# Test Piper API
+curl http://localhost:5500/health
+curl http://localhost:5500/voices
+```
+
+**Fix**:
+```bash
+# Rebuild Piper (downloads voice models)
+docker-compose build piper-tts
+
+# Restart Piper
+docker-compose up -d piper-tts
+
+# Check voice files are downloaded
+docker-compose exec piper-tts ls -la /app/voices
+```
+
+### Issue 4: Ollama Connection Error
+
+**Symptoms**: Agent can't connect to Ollama
+
+**Check**:
+```bash
+# Test Ollama from host
+curl http://192.168.1.120:11434/api/tags
+
+# Test Ollama from container
+docker-compose exec agent-worker curl http://host.docker.internal:11434/api/tags
+```
+
+**Fix**:
+```bash
+# 1. Verify Ollama is running on host
+ollama list
+
+# 2. Check firewall allows connections
+sudo ufw allow 11434/tcp
+
+# 3. Update OLLAMA_URL in .env if needed
+# OLLAMA_URL=http://192.168.1.120:11434
+```
+
+### Issue 5: Frontend Can't Connect
+
+**Symptoms**: "Failed to connect" error in browser
+
+**Check**:
+```bash
+# 1. Check backend is running
+curl http://localhost:8000/health
+
+# 2. Check LiveKit is accessible
+curl http://localhost:7880
+
+# 3. Check Nginx proxy
+docker-compose logs nginx
+```
+
+**Fix**:
+```bash
+# Restart all web services
+docker-compose restart backend frontend nginx
+
+# Check browser console for errors (F12)
+```
+
+## 🔐 Security Notes
+
+### Local Network Only
+
+This setup is designed for **local network use only**. To expose to the internet:
+
+1. Set up proper firewall rules
+2. Use real SSL certificates (not self-signed)
+3. Configure TURN server for NAT traversal
+4. Update LIVEKIT_EXTERNAL_IP in .env
+
+### No API Keys
+
+This implementation requires **ZERO API keys** because:
+- WhisperLive: Self-hosted STT
+- Piper TTS: Self-hosted voice synthesis
+- Ollama: Self-hosted LLM
+- Silero VAD: Bundled with LiveKit Agents
+
+## 📊 Performance Tuning
+
+### WhisperLive Model Selection
+
+In `docker-compose.yaml`:
+```yaml
+whisperlive:
+  environment:
+    # Faster but less accurate
+    - WHISPER_MODEL=tiny
+
+    # Balanced (default)
+    - WHISPER_MODEL=small
+
+    # More accurate but slower
+    - WHISPER_MODEL=medium
+```
+
+### Ollama Model Selection
+
+In `.env`:
+```bash
+# Faster, less capable
+OLLAMA_MODEL=llama3.1:7b
+
+# Balanced (default)
+OLLAMA_MODEL=llama3.1:8b
+
+# More capable but slower
+OLLAMA_MODEL=llama3.1:70b
+```
+
+### Piper Voice Selection
+
+In `backend/agent/worker.py` (line 118):
+```python
+piper_client = PiperTTSClient(
+    base_url=piper_url,
+    voice="en_US-lessac-medium",  # Change this
+)
+```
+
+Available voices:
+- `en_US-lessac-medium`: Female, clear
+- `en_US-lessac-high`: Female, high quality
+- `en_US-libritts_r-medium`: More natural
+- See: https://huggingface.co/rhasspy/piper-voices
+
+## 📝 Environment Variables
+
+### Required Variables (.env)
+
+```bash
+# LiveKit Server
+LIVEKIT_API_KEY=<your-key>
+LIVEKIT_API_SECRET=<your-secret>
+LIVEKIT_URL=http://livekit:7880
+LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
+LIVEKIT_NODE_IP=192.168.20.224
+
+# Ollama (adjust IP to your setup)
+OLLAMA_URL=http://192.168.1.120:11434
+OLLAMA_MODEL=llama3.1:8b
+
+# WhisperLive
+WHISPERLIVE_HOST=whisperlive
+WHISPERLIVE_PORT=9090
+
+# Piper TTS
+PIPER_URL=http://piper-tts:5500
+
+# Redis
+REDIS_URL=redis://redis:6379
+
+# Frontend
+VITE_LIVEKIT_URL=wss://192.168.20.224:7880
+VITE_API_URL=https://192.168.20.224
+```
+
+## 🧪 Testing
+
+### Test 1: Service Health Checks
+
+```bash
+# All services should return 200 OK
+curl http://localhost:8000/health          # Backend
+curl http://localhost:5500/health          # Piper TTS
+curl http://localhost:7880                 # LiveKit
+
+# Redis
+docker-compose exec redis redis-cli ping   # Should return PONG
+```
+
+### Test 2: Voice Pipeline
+
+```bash
+# 1. Join room in browser
+# 2. Open browser console (F12)
+# 3. Speak "Hello"
+# 4. Check agent worker logs:
+
+docker-compose logs -f agent-worker
+
+# You should see:
+# "👤 USER SAID: 'Hello'"
+# "💬 Conversation item added: Role: assistant"
+# "🤖 Agent state changed: speaking"
+```
+
+### Test 3: End-to-End Flow
+
+```bash
+# Complete test procedure:
+1. Open http://localhost:3000
+2. Join room "test-room"
+3. Wait for agent greeting (should speak automatically)
+4. Say "What's the weather like?"
+5. Agent should respond conversationally
+6. Check all logs for errors:
+   docker-compose logs agent-worker | grep ERROR
+   docker-compose logs whisperlive | grep ERROR
+   docker-compose logs piper-tts | grep ERROR
+```
+
+## 🛠️ Maintenance
+
+### Update Services
+
+```bash
+# Pull latest images
+docker-compose pull
+
+# Rebuild custom images
+docker-compose build
+
+# Restart all
+docker-compose down
+docker-compose up -d
+```
+
+### Clean Up
+
+```bash
+# Stop all services
+docker-compose down
+
+# Remove volumes (WARNING: Deletes all data)
+docker-compose down -v
+
+# Clean Docker cache
+docker system prune -a
+```
+
+### View Logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f agent-worker
+docker-compose logs -f whisperlive
+docker-compose logs -f piper-tts
+
+# Last 100 lines
+docker-compose logs --tail=100 agent-worker
+
+# Follow new logs only
+docker-compose logs -f --tail=0 agent-worker
+```
+
+## 📚 Additional Resources
+
+### Official Documentation
+
+- **LiveKit Agents**: https://docs.livekit.io/agents/
+- **LiveKit v1.x**: https://docs.livekit.io/agents/build/
+- **Custom Nodes**: https://docs.livekit.io/agents/build/nodes
+- **Ollama**: https://ollama.com/
+- **WhisperLive**: https://github.com/collabora/WhisperLive
+- **Piper TTS**: https://github.com/rhasspy/piper
+
+### Implementation Notes
+
+This implementation uses:
+- **LiveKit Agents SDK v1.x** (latest)
+- **Custom STT Node** for WhisperLive integration
+- **Custom TTS Node** for Piper integration
+- **Official Ollama Plugin** via `openai.LLM.with_ollama()`
+- **Silero VAD** for voice activity detection
+
+### Code Architecture
+
+```python
+# backend/agent/worker.py
+
+class TrinityAssistant(Agent):
+    # Custom STT node (line 63-101)
+    async def stt_node(self, audio, model_settings):
+        # Uses WhisperLive via websocket
+
+    # Custom TTS node (line 103-151)
+    async def tts_node(self, text, model_settings):
+        # Uses Piper via HTTP API
+
+# Session setup (line 158-267)
+@server.rtc_session()
+async def entrypoint(ctx):
+    session = AgentSession(
+        llm=openai.LLM.with_ollama(...),  # Official plugin
+        vad=silero.VAD.load(),            # Local VAD
+    )
+    await session.start(agent=TrinityAssistant(), room=ctx.room)
+```
+
+## ✅ Final Checklist
+
+Before asking for help, verify:
+
+- [ ] Ollama is running: `ollama list`
+- [ ] Model is pulled: `ollama list | grep llama3.1`
+- [ ] All services running: `docker-compose ps`
+- [ ] No errors in logs: `docker-compose logs | grep ERROR`
+- [ ] Ports not in use: `netstat -tulpn | grep -E "7880|8000|9090|5500"`
+- [ ] Firewall allows connections: `sudo ufw status`
+- [ ] Environment variables set: `cat .env`
+- [ ] Browser can access frontend: `curl http://localhost:3000`
+- [ ] Backend is healthy: `curl http://localhost:8000/health`
+
+## 🎉 Success Criteria
+
+Your setup is working correctly when:
+
+1. ✅ Frontend loads at http://localhost:3000
+2. ✅ Join room shows "Connected" status
+3. ✅ Agent greets you automatically
+4. ✅ When you speak, agent logs show "👤 USER SAID: <your text>"
+5. ✅ Agent responds with relevant answer
+6. ✅ Logs show "ALL SERVICES ARE LOCAL - NO CLOUD DEPENDENCIES"
+7. ✅ No errors in any service logs
+
+**Congratulations! You now have a fully functional, 100% local AI voice agent! 🚀**
