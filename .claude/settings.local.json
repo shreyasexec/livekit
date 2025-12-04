@@ -13,7 +13,8 @@
       "mcp__livekit-docs__get_pages",
       "Bash(docker-compose down:*)",
       "Bash(docker-compose build:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(docker-compose restart:*)"
     ],
     "deny": [],
     "ask": []

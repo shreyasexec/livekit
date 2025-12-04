@@ -52,11 +52,37 @@ class TrinityAssistant(Agent):
 
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful AI assistant for the Trinity smart city platform.
-You help users with information about city services, weather, transportation, and general inquiries.
-Keep your responses concise and natural for voice conversation.
-Speak in a friendly, conversational tone.
-Avoid lengthy explanations unless specifically asked."""
+            instructions="""You are Trinity, a friendly and conversational AI voice assistant.
+
+## Your Personality:
+- Warm, enthusiastic, and personable - like talking to a helpful friend
+- Natural and casual in speech - use contractions, conversational phrases
+- Genuinely curious about the user's needs and eager to help
+- Keep responses SHORT and conversational (1-3 sentences max)
+- Speak like a real person, not a formal assistant
+
+## How to Respond:
+- Start with natural acknowledgments: "Sure!", "Got it!", "Absolutely!", "Of course!"
+- Use casual language: "Hey", "Yeah", "Cool", "Awesome", instead of formal phrases
+- Ask follow-up questions to keep the conversation flowing
+- Mirror the user's energy and tone
+- If you don't know something, be honest: "Hmm, I'm not sure about that one"
+
+## What to Avoid:
+- NO long-winded explanations or lists unless specifically asked
+- NO formal language like "I would be happy to assist you"
+- NO robotic phrases like "As an AI assistant"
+- Don't apologize unless truly necessary
+- Keep it natural and brief!
+
+## Examples of Good Responses:
+User: "What's the weather?"
+You: "Let me check that for you! What city are you in?"
+
+User: "Tell me about city services"
+You: "Sure thing! We've got lots of services available. What are you looking for specifically - transportation, utilities, or something else?"
+
+Remember: You're having a CONVERSATION, not giving a presentation. Keep it short, natural, and engaging!"""
         )
         logger.info("TrinityAssistant initialized with local STT/TTS/LLM")
 
@@ -106,10 +132,10 @@ Avoid lengthy explanations unless specifically asked."""
         model_settings: ModelSettings
     ) -> AsyncIterable[rtc.AudioFrame]:
         """
-        Custom TTS node using local Piper service.
+        Custom TTS node using local Piper service with sentence buffering.
 
-        This overrides the default TTS behavior to use our local Piper server
-        instead of cloud-based TTS services.
+        This buffers text chunks into complete sentences before synthesizing,
+        which dramatically reduces latency and creates more natural speech flow.
         """
         logger.info("Using local Piper TTS service")
 
@@ -120,35 +146,90 @@ Avoid lengthy explanations unless specifically asked."""
             voice="en_US-lessac-medium",
         )
 
-        # Process text chunks and synthesize audio
+        import numpy as np
+        import re
+
+        # Sentence delimiters
+        sentence_endings = re.compile(r'[.!?]\s*')
+
+        # Buffer for accumulating text
+        buffer = ""
+
+        # Process text chunks and buffer into sentences
         async for text_chunk in text:
-            if text_chunk.strip():
-                logger.debug(f"Synthesizing: '{text_chunk[:50]}...'")
+            if not text_chunk.strip():
+                continue
 
+            buffer += text_chunk
+
+            # Check if we have complete sentences
+            sentences = sentence_endings.split(buffer)
+
+            # If we have complete sentences (more than one part after split)
+            if len(sentences) > 1:
+                # Process all complete sentences
+                for sentence in sentences[:-1]:
+                    sentence = sentence.strip()
+                    if sentence:
+                        logger.debug(f"Synthesizing sentence: '{sentence[:50]}...'")
+
+                        try:
+                            # Get audio from Piper for the full sentence
+                            audio_data = await piper_client.synthesize(sentence + ".")
+
+                            # Convert bytes to int16 array
+                            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+
+                            # Create audio frame
+                            frame = rtc.AudioFrame(
+                                data=audio_array.tobytes(),
+                                sample_rate=22050,
+                                num_channels=1,
+                                samples_per_channel=len(audio_array),
+                            )
+
+                            yield frame
+
+                        except Exception as e:
+                            logger.error(f"TTS synthesis error: {e}")
+                            continue
+
+                # Keep the incomplete sentence in buffer
+                buffer = sentences[-1]
+
+            # If buffer gets too long (> 200 chars), flush it anyway to avoid delays
+            elif len(buffer) > 200:
+                logger.debug(f"Flushing long buffer: '{buffer[:50]}...'")
                 try:
-                    # Get audio from Piper
-                    audio_data = await piper_client.synthesize(text_chunk)
-
-                    # Convert audio bytes to AudioFrame
-                    # Piper returns raw PCM audio at 22050 Hz
-                    import numpy as np
-
-                    # Convert bytes to int16 array
+                    audio_data = await piper_client.synthesize(buffer)
                     audio_array = np.frombuffer(audio_data, dtype=np.int16)
-
-                    # Create audio frame
                     frame = rtc.AudioFrame(
                         data=audio_array.tobytes(),
                         sample_rate=22050,
                         num_channels=1,
                         samples_per_channel=len(audio_array),
                     )
-
                     yield frame
-
+                    buffer = ""
                 except Exception as e:
                     logger.error(f"TTS synthesis error: {e}")
-                    continue
+                    buffer = ""
+
+        # Flush any remaining text in buffer
+        if buffer.strip():
+            logger.debug(f"Flushing final buffer: '{buffer[:50]}...'")
+            try:
+                audio_data = await piper_client.synthesize(buffer)
+                audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                frame = rtc.AudioFrame(
+                    data=audio_array.tobytes(),
+                    sample_rate=22050,
+                    num_channels=1,
+                    samples_per_channel=len(audio_array),
+                )
+                yield frame
+            except Exception as e:
+                logger.error(f"TTS synthesis error: {e}")
 
 
 # Create agent server
@@ -216,29 +297,94 @@ async def entrypoint(ctx: agents.JobContext):
         # Set up session event handlers
         @session.on("user_input_transcribed")
         def on_user_transcript(transcript):
-            """Handle user speech transcription."""
+            """Handle user speech transcription and send to UI."""
             if transcript.is_final:
                 text = transcript.transcript
                 logger.info(f"👤 USER SAID: '{text}'")
 
+                # Send transcript to frontend via data channel
+                import json
+                from datetime import datetime
+                try:
+                    transcript_data = json.dumps({
+                        "type": "transcript",
+                        "speaker": "user",
+                        "text": text,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    })
+                    ctx.room.local_participant.publish_data(
+                        payload=transcript_data.encode("utf-8"),
+                        topic="transcripts",
+                    )
+                    logger.debug(f"✓ Sent user transcript to UI: '{text[:50]}...'")
+                except Exception as e:
+                    logger.error(f"Failed to send user transcript: {e}")
+
         @session.on("conversation_item_added")
         def on_conversation_item(item):
-            """Handle conversation items (user and agent messages)."""
+            """Handle conversation items and send agent responses to UI."""
             logger.info(f"💬 Conversation item added:")
             logger.info(f"   - Role: {item.role}")
             if hasattr(item, 'content') and item.content:
                 content_preview = item.content[:100] if len(item.content) > 100 else item.content
                 logger.info(f"   - Content: {content_preview}")
 
+                # If this is an agent response, send it to the UI
+                if item.role == "assistant" and item.content:
+                    import json
+                    from datetime import datetime
+                    try:
+                        transcript_data = json.dumps({
+                            "type": "transcript",
+                            "speaker": "assistant",
+                            "text": item.content,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+                        ctx.room.local_participant.publish_data(
+                            payload=transcript_data.encode("utf-8"),
+                            topic="transcripts",
+                        )
+                        logger.debug(f"✓ Sent agent transcript to UI: '{item.content[:50]}...'")
+                    except Exception as e:
+                        logger.error(f"Failed to send agent transcript: {e}")
+
         @session.on("agent_state_changed")
         def on_agent_state(state):
-            """Handle agent state changes."""
+            """Handle agent state changes and send to UI."""
             logger.info(f"🤖 Agent state changed: {state}")
+
+            # Send state change to UI
+            import json
+            try:
+                state_data = json.dumps({
+                    "type": "agent_state",
+                    "state": str(state),
+                })
+                ctx.room.local_participant.publish_data(
+                    payload=state_data.encode("utf-8"),
+                    topic="agent_status",
+                )
+            except Exception as e:
+                logger.error(f"Failed to send agent state: {e}")
 
         @session.on("user_state_changed")
         def on_user_state(state):
-            """Handle user state changes."""
+            """Handle user state changes and send to UI."""
             logger.info(f"👤 User state changed: {state}")
+
+            # Send state change to UI
+            import json
+            try:
+                state_data = json.dumps({
+                    "type": "user_state",
+                    "state": str(state),
+                })
+                ctx.room.local_participant.publish_data(
+                    payload=state_data.encode("utf-8"),
+                    topic="user_status",
+                )
+            except Exception as e:
+                logger.error(f"Failed to send user state: {e}")
 
         # Create the agent instance (with custom STT/TTS nodes)
         logger.info("Creating TrinityAssistant agent with custom nodes...")
