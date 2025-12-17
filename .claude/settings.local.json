@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
       "Bash(docker compose:*)",
       "Bash(netstat:*)",
       "Bash(findstr:*)",
@@ -14,7 +15,33 @@
       "Bash(docker-compose down:*)",
       "Bash(docker-compose build:*)",
       "Bash(curl:*)",
-      "Bash(docker-compose restart:*)"
+      "Bash(docker-compose restart:*)",
+      "Bash(ls:*)",
+      "mcp__livekit-docs__get_python_agent_example",
+      "mcp__livekit-docs__docs_search",
+      "Bash(xxd:*)",
+      "Bash(xargs:*)",
+      "Bash(docker-compose exec:*)",
+      "mcp__livekit-docs__code_search",
+      "Bash(cat:*)",
+      "Bash(python3:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker start:*)",
+      "Bash(docker run:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker rm:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(timeout 45 docker-compose logs:*)",
+      "WebSearch",
+      "Bash(timeout 90 docker compose logs:*)",
+      "Bash(timeout 120 docker compose logs:*)",
+      "Bash(timeout 15 docker-compose logs:*)",
+      "Bash(timeout 90 docker-compose logs:*)",
+      "Bash(timeout 60 docker-compose:*)",
+      "Bash(timeout 30 docker-compose logs:*)"
     ],
     "deny": [],
     "ask": []

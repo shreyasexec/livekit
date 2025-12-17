@@ -11,6 +11,8 @@ import {
 } from '@livekit/components-react'
 import { Track, Room as LiveKitRoomType } from 'livekit-client'
 import '@livekit/components-styles'
+import TranscriptPanel from './TranscriptPanel'
+import ParticipantTileWithSpeaking from './ParticipantTileWithSpeaking'
 
 interface RoomProps {
   token: string
@@ -57,44 +59,52 @@ function RoomContent() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900">
-      {/* Video Grid */}
-      <div className="flex-1 p-4">
-        <GridLayout tracks={tracks} style={{ height: '100%' }}>
-          <ParticipantTile />
-        </GridLayout>
+    <div className="h-screen flex bg-gray-900">
+      {/* Left Side - Video and Controls */}
+      <div className="flex-1 flex flex-col">
+        {/* Video Grid */}
+        <div className="flex-1 p-4">
+          <GridLayout tracks={tracks} style={{ height: '100%' }}>
+            <ParticipantTileWithSpeaking />
+          </GridLayout>
+        </div>
+
+        {/* Control Bar */}
+        <div className="p-4 bg-gray-800 border-t border-gray-700">
+          <div className="flex justify-center gap-4">
+            <button
+              onClick={toggleMic}
+              className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
+                micEnabled
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-red-600 hover:bg-red-700 text-white'
+              }`}
+            >
+              {micEnabled ? '🎤 Mic On' : '🎤 Mic Off'}
+            </button>
+
+            <button
+              onClick={toggleCamera}
+              className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
+                cameraEnabled
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                  : 'bg-gray-600 hover:bg-gray-700 text-white'
+              }`}
+            >
+              {cameraEnabled ? '📹 Camera On' : '📹 Camera Off'}
+            </button>
+          </div>
+
+          <div className="mt-4 text-center text-sm text-gray-400">
+            <p>💡 Speak into your microphone - the AI agent will respond to you!</p>
+            <p className="mt-1">Participants: {tracks.length}</p>
+          </div>
+        </div>
       </div>
 
-      {/* Control Bar */}
-      <div className="p-4 bg-gray-800 border-t border-gray-700">
-        <div className="flex justify-center gap-4">
-          <button
-            onClick={toggleMic}
-            className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
-              micEnabled
-                ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                : 'bg-red-600 hover:bg-red-700 text-white'
-            }`}
-          >
-            {micEnabled ? '🎤 Mic On' : '🎤 Mic Off'}
-          </button>
-
-          <button
-            onClick={toggleCamera}
-            className={`px-6 py-3 rounded-lg font-semibold transition-colors ${
-              cameraEnabled
-                ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                : 'bg-gray-600 hover:bg-gray-700 text-white'
-            }`}
-          >
-            {cameraEnabled ? '📹 Camera On' : '📹 Camera Off'}
-          </button>
-        </div>
-
-        <div className="mt-4 text-center text-sm text-gray-400">
-          <p>💡 Speak into your microphone - the AI agent will respond to you!</p>
-          <p className="mt-1">Participants: {tracks.length}</p>
-        </div>
+      {/* Right Side - Transcriptions Panel */}
+      <div className="w-96 p-4 border-l border-gray-700">
+        <TranscriptPanel />
       </div>
 
       {/* Audio Renderer */}

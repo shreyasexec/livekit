@@ -17,7 +17,7 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
   const { state, audioTrack } = useVoiceAssistant();
   const room = useRoomContext();
   const [transcripts, setTranscripts] = useState<
-    { speaker: string; text: string; timestamp?: string }[]
+    { speaker: string; text: string; timestamp?: string; participantIdentity?: string }[]
   >([]);
   const [agentState, setAgentState] = useState<string>('initializing');
   const [userState, setUserState] = useState<string>('idle');
@@ -32,9 +32,20 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
 
         // Handle transcripts
         if (topic === 'transcripts' && data?.text) {
-          const speakerName = data.speaker || participant?.identity || 'unknown';
+          const speakerType = data.speaker || 'user';
+          const participantIdentity = data.participantIdentity || participant?.identity || 'Unknown';
           setTranscripts((prev) => {
-            const next = [...prev, { speaker: speakerName, text: data.text, timestamp: data.timestamp }];
+            // Avoid duplicates
+            const isDuplicate = prev.some(
+              (t) => t.text === data.text && t.timestamp === data.timestamp
+            );
+            if (isDuplicate) return prev;
+            const next = [...prev, {
+              speaker: speakerType,
+              text: data.text,
+              timestamp: data.timestamp,
+              participantIdentity: participantIdentity
+            }];
             return next.slice(-30); // keep the list reasonably short
           });
         }
@@ -63,6 +74,9 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
     () =>
       transcripts.map((t, idx) => {
         const isAgent = t.speaker === 'assistant';
+        const displayName = isAgent
+          ? 'Trinity AI'
+          : (t.participantIdentity || 'You');
         return (
           <div
             key={`${t.timestamp || idx}-${idx}`}
@@ -82,7 +96,7 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
                 <span className={`text-xs font-semibold ${
                   isAgent ? 'text-blue-300' : 'text-green-300'
                 }`}>
-                  {isAgent ? 'Trinity AI' : 'You'}
+                  {displayName}
                 </span>
                 {t.timestamp && (
                   <span className="text-xs text-gray-500">

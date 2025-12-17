@@ -1,22 +1,56 @@
 # LiveKit AI Voice & Video Agent Platform
 
-A comprehensive LiveKit-based AI communication platform with voice calls, video calls, messaging, and AI agent capabilities. Integrates with SIP for telephony, uses self-hosted AI models (Ollama, WhisperLive, Piper TTS), and provides a React frontend with real-time transcription.
+A comprehensive **100% on-premises, open-source** LiveKit-based AI communication platform with voice calls, video calls, messaging, and AI agent capabilities. Integrates with SIP for telephony, uses self-hosted AI models (Ollama, WhisperLiveKit, Piper TTS), and provides a React frontend with real-time transcription.
 
 ## 🏗️ Architecture
 
 ```
-SIP Caller → LiveKit SIP → LiveKit Server → AI Agent Worker
-                                ↓
-                        VAD → STT → LLM → TTS
-                                ↓
-                        Audio back to caller
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           LIVEKIT AI VOICE AGENT                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
+│  │   Frontend   │    │   Backend    │    │   LiveKit    │                  │
+│  │  (React UI)  │◄──►│  (FastAPI)   │◄──►│   Server     │                  │
+│  │  Port 3000   │    │  Port 8000   │    │  Port 7880   │                  │
+│  └──────────────┘    └──────────────┘    └──────────────┘                  │
+│         │                   │                   │                          │
+│         │                   │                   ▼                          │
+│         │                   │           ┌──────────────┐                   │
+│         │                   │           │ Agent Worker │                   │
+│         │                   │           │   (Python)   │                   │
+│         │                   │           └──────────────┘                   │
+│         │                   │                   │                          │
+│         ▼                   ▼                   ▼                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                      VOICE PROCESSING PIPELINE                      │   │
+│  │                                                                     │   │
+│  │  ┌─────────┐   ┌─────────────┐   ┌─────────┐   ┌─────────────┐     │   │
+│  │  │ Silero  │   │WhisperLive- │   │ Ollama  │   │   Piper     │     │   │
+│  │  │   VAD   │──►│    Kit      │──►│   LLM   │──►│    TTS      │     │   │
+│  │  │ (local) │   │ Port 8765   │   │Port11434│   │  Port 5500  │     │   │
+│  │  └─────────┘   └─────────────┘   └─────────┘   └─────────────┘     │   │
+│  │                                                                     │   │
+│  │  Voice       Speech-to-Text    Language       Text-to-Speech       │   │
+│  │  Detection   (Whisper small)   Model          (Neural voices)      │   │
+│  │  ~50ms       ~500ms-2s         ~300ms-2s      ~1.3-1.7s            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                  │
+│  │    Redis     │    │    NGINX     │    │  LiveKit SIP │                  │
+│  │  Port 6379   │    │  Port 443    │    │  Port 5060   │                  │
+│  └──────────────┘    └──────────────┘    └──────────────┘                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Voice Pipeline
-1. **VAD (Silero)**: Voice Activity Detection (local)
-2. **STT (WhisperLive)**: Speech-to-Text via WebSocket (Port 9090)
-3. **LLM (Ollama)**: Language Model via OpenAI-compatible API (Port 11434)
-4. **TTS (Piper)**: Text-to-Speech synthesis (Port 5500)
+### Voice Pipeline Components
+| Component | Technology | Port | Function | Avg Latency |
+|-----------|------------|------|----------|-------------|
+| **VAD** | Silero VAD v6 | Local | Voice Activity Detection | ~50ms |
+| **STT** | WhisperLiveKit (Whisper small) | 8765 | Speech-to-Text | 500ms-2s |
+| **LLM** | Ollama (llama3.1:8b) | 11434 | Language Model | 300ms-1.7s |
+| **TTS** | Piper (lessac-medium) | 5500 | Text-to-Speech | 1.3-1.7s |
 
 ## 📋 Prerequisites
 
@@ -356,11 +390,294 @@ curl -X POST http://localhost:8000/api/token \
   }'
 ```
 
+## 📊 Performance Metrics & Analysis
+
+### Measured Component Latencies (Benchmarked December 2025)
+
+| Component | Operation | Measured Latency | Notes |
+|-----------|-----------|------------------|-------|
+| **Ollama LLM** | Short response ("Hi") | ~280ms | Warm model, cached |
+| **Ollama LLM** | Medium response | ~1.65s | 50-60 tokens output |
+| **Piper TTS** | Short text (3 words) | ~1.5s | CPU inference |
+| **Piper TTS** | Medium text (15 words) | ~1.66s | ~100KB audio output |
+| **WhisperLiveKit** | Transcription | 500ms-2s | Depends on speech length |
+| **Silero VAD** | Speech detection | ~50ms | Local, very fast |
+
+### Total Pipeline Latency Breakdown
+
+```
+User speaks → Agent responds: 3-6 seconds total
+
+Breakdown:
+├── VAD Detection:        ~50ms   (negligible)
+├── STT Processing:       ~500ms-2s (WhisperLiveKit)
+├── LLM Generation:       ~300ms-1.7s (Ollama)
+├── TTS Synthesis:        ~1.3-1.7s (Piper)
+└── Network/Audio:        ~100-200ms (WebRTC)
+```
+
+### Performance Insights & Bottlenecks
+
+#### 🔴 Critical Bottlenecks Identified:
+
+1. **TTS (Piper) - Highest Latency (~1.5s)**
+   - Running on CPU without GPU acceleration
+   - Synthesizes complete audio before returning (non-streaming)
+   - **Optimization**: Use GPU or switch to streaming TTS
+
+2. **STT (WhisperLiveKit) - Variable Latency**
+   - `lag=` values in logs show 2-17 seconds buffer lag
+   - Buffer resets causing "No ASR output" warnings
+   - **Optimization**: Reduce `--min-chunk-size`, tune VAD settings
+
+3. **LLM (Ollama) - Network Dependent**
+   - Running on external server (192.168.1.120)
+   - Network latency adds ~50-100ms
+   - **Optimization**: Run Ollama locally or use faster model
+
+#### 🟡 Areas for Improvement:
+
+| Issue | Current State | Recommended Fix |
+|-------|---------------|-----------------|
+| WhisperLiveKit VAD | Disabled (--no-vad) | Good - LiveKit VAD handles it |
+| Duplicate transcripts | "Skipping already finalized" logs | Fixed with deduplication |
+| TTS blocking | Async with chunked output | Implemented but still slow |
+| End-of-speech delay | min_endpointing_delay=0.3 | Can reduce to 0.2 |
+
+### Monitoring Commands
+
+```bash
+# Real-time latency monitoring
+docker-compose logs -f agent-worker | grep -E "\[TIMING\]|\[STATE\]|\[VAD\]|\[TTS\]"
+
+# WhisperLiveKit buffer status
+docker-compose logs -f whisperlivekit | grep -E "lag=|buffer="
+
+# Piper TTS synthesis times
+docker-compose logs -f piper-tts | grep -v "GET /health"
+
+# Component health check
+curl -s http://localhost:5500/health && \
+curl -s http://localhost:8000/health && \
+curl -s http://192.168.1.120:11434/api/tags | head -1
+```
+
+---
+
+## 💻 Source Code Documentation
+
+### Project Structure
+
+```
+livekit/
+├── docker-compose.yaml          # Main service orchestration (10 services)
+├── .env                         # Environment configuration
+├── CLAUDE.md                    # AI assistant context file
+├── README.md                    # This documentation
+│
+├── configs/
+│   ├── livekit.yaml            # LiveKit server configuration
+│   └── sip.yaml                # SIP server configuration (optional)
+│
+├── backend/
+│   ├── main.py                 # FastAPI REST API server
+│   ├── requirements.txt        # Python dependencies
+│   ├── Dockerfile              # Agent worker container
+│   ├── Dockerfile.api          # API server container
+│   │
+│   └── agent/
+│       └── worker.py           # Main AI agent worker (see below)
+│
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx             # Main app with room join UI
+│   │   ├── App.css             # Global styles
+│   │   ├── index.css           # Tailwind imports + custom CSS
+│   │   ├── main.tsx            # React entry point
+│   │   │
+│   │   └── components/
+│   │       ├── VoiceAgent.tsx  # Main voice UI with visualizer
+│   │       ├── TranscriptPanel.tsx  # Real-time transcript display
+│   │       └── Room.tsx        # Basic room component
+│   │
+│   ├── package.json            # Node dependencies
+│   ├── vite.config.ts          # Vite build configuration
+│   └── Dockerfile              # Frontend container
+│
+├── tts-service/
+│   ├── api_server.py           # Piper TTS HTTP API
+│   └── Dockerfile              # TTS container with Piper
+│
+└── whisperlivekit/
+    └── Dockerfile              # WhisperLiveKit STT container
+```
+
+### Key Source Files
+
+#### 1. `backend/agent/worker.py` - AI Agent Worker
+
+The main voice agent implementation (~770 lines):
+
+```python
+# Key Components:
+
+class WhisperLiveKitSTT(stt.STT):
+    """
+    Custom STT plugin for WhisperLiveKit WebSocket integration.
+    - Connects to ws://whisperlivekit:8765/asr
+    - Sends raw PCM audio (s16le, 16kHz, mono)
+    - Receives JSON transcription with interim/final results
+    - Implements stable text timeout for force-finalization
+    """
+
+class AsyncPiperTTS(tts.TTS):
+    """
+    Async TTS implementation for Piper with chunked output.
+    - Uses aiohttp for non-blocking HTTP requests
+    - Chunks audio output (4096 bytes) for smooth playback
+    - Prevents event loop blocking (fixes stuttering issue)
+    """
+
+def create_voice_pipeline(...):
+    """Creates STT, LLM, TTS, VAD components for AgentSession."""
+    # Returns: (stt, llm, tts, vad) tuple
+
+async def entrypoint(ctx: JobContext):
+    """
+    Main agent entry point.
+    - Creates voice pipeline components
+    - Configures AgentSession with optimized settings
+    - Sets up timing instrumentation for latency analysis
+    - Generates initial greeting after session.start()
+    """
+```
+
+**Configuration Options:**
+```python
+# VAD Settings (Silero)
+vad=silero.VAD.load(
+    min_speech_duration=0.05,    # Faster speech detection
+    min_silence_duration=0.25,   # End-of-speech threshold
+    activation_threshold=0.45,   # Speech detection sensitivity
+)
+
+# Session Settings
+AgentSession(
+    turn_detection="vad",
+    min_endpointing_delay=0.3,   # Delay before processing
+)
+```
+
+#### 2. `frontend/src/components/VoiceAgent.tsx` - Voice UI
+
+React component with LiveKit integration (~205 lines):
+
+```typescript
+// Key Features:
+- LiveKitRoom connection with audio-only mode
+- useVoiceAssistant() hook for agent state
+- Real-time transcript display with speaker identification
+- BarVisualizer for audio feedback
+- Speaking status indicators (user/agent)
+
+// Data Channel Topics:
+- "transcripts": Real-time speech transcription
+- "agent_status": Agent state changes
+- "user_status": User speaking state
+```
+
+#### 3. `tts-service/api_server.py` - Piper TTS API
+
+FastAPI server wrapping Piper CLI (~280 lines):
+
+```python
+# Endpoints:
+POST /api/synthesize     # Full WAV synthesis
+POST /api/synthesize/stream  # Streaming PCM (lower latency)
+GET  /voices             # List available voices
+GET  /health             # Health check
+
+# Audio Format:
+- Sample Rate: 22050 Hz
+- Channels: Mono
+- Bit Depth: 16-bit signed PCM
+```
+
+#### 4. `docker-compose.yaml` - Service Orchestration
+
+10 containerized services:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `redis` | redis:7-alpine | Message broker, state storage |
+| `livekit` | livekit/livekit-server | WebRTC signaling server |
+| `livekit-sip` | livekit/sip | SIP gateway (optional) |
+| `whisperlivekit` | Custom build | Speech-to-text service |
+| `piper-tts` | Custom build | Text-to-speech service |
+| `agent-worker` | Custom build | AI agent Python worker |
+| `backend` | Custom build | FastAPI REST API |
+| `nginx` | Custom build | SSL reverse proxy |
+| `frontend` | Custom build | React web UI |
+
+---
+
+## 🎨 UI Enrichment Opportunities
+
+### Current UI Features
+- Room join form with validation
+- Voice visualizer (BarVisualizer)
+- Real-time transcript panel
+- Speaking indicators (user/agent)
+- Dark theme with Tailwind CSS
+
+### Suggested Enhancements
+
+#### 1. **Performance Dashboard**
+```
+Add a collapsible panel showing:
+- Current latency metrics (STT, LLM, TTS)
+- Connection quality indicator
+- Buffer status from WhisperLiveKit
+```
+
+#### 2. **Enhanced Transcript View**
+```
+- Timestamps with relative time ("2s ago")
+- Copy transcript button
+- Export conversation as text/JSON
+- Highlight keywords or entities
+```
+
+#### 3. **Agent Status Details**
+```
+- Show current processing stage (listening/thinking/speaking)
+- Display token count for LLM responses
+- Show audio duration for TTS output
+```
+
+#### 4. **Settings Panel**
+```
+- Microphone selection
+- Volume controls
+- Voice speed adjustment
+- Language selection
+```
+
+#### 5. **Visual Improvements**
+```
+- Animated waveform instead of bars
+- Avatar for agent with lip-sync animation
+- Typing indicator during LLM processing
+- Sound effects for state changes
+```
+
+---
+
 ## 📚 Documentation
 
 - **LiveKit Agents**: https://docs.livekit.io/agents/
 - **LiveKit SIP**: https://docs.livekit.io/sip/
-- **WhisperLive**: https://github.com/collabora/WhisperLive
+- **WhisperLiveKit**: https://github.com/QuentinFuxa/WhisperLiveKit
 - **Ollama**: https://ollama.com/
 - **Piper TTS**: https://github.com/rhasspy/piper
 

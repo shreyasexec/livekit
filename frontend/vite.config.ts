@@ -11,5 +11,18 @@ export default defineConfig({
       key: fs.readFileSync('/etc/ssl/private/localhost-key.pem'),
       cert: fs.readFileSync('/etc/ssl/certs/localhost.pem'),
     },
+    proxy: {
+      '/api': {
+        target: 'http://backend:8000',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/rtc': {
+        target: 'ws://livekit:7880',
+        ws: true,
+        changeOrigin: true,
+        secure: false,
+      },
+    },
   },
 })

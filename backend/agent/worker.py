@@ -1,33 +1,45 @@
 """
-LiveKit AI Voice Agent Worker - 100% Local Open-Source Implementation
+LiveKit AI Voice Agent Worker - WhisperLiveKit + Piper TTS Integration
 
-Based on official LiveKit v1.x documentation with custom STT/TTS nodes:
-- https://docs.livekit.io/agents/build/nodes
+Based on official LiveKit Agents documentation:
 - https://docs.livekit.io/agents/build/sessions
+- https://docs.livekit.io/agents/build/nodes
 
-This implementation uses:
-- WhisperLive (local STT) via custom stt_node
-- Piper TTS (local) via custom tts_node
-- Ollama (local LLM) via official plugin
-- Silero VAD (local)
-- NO cloud services, NO API keys required
+Uses:
+- WhisperLiveKit for STT (--pcm-input mode): https://github.com/QuentinFuxa/WhisperLiveKit
+- livekit-plugins-piper-tts for TTS: https://pypi.org/project/livekit-plugins-piper-tts/
+- Ollama for LLM (OpenAI-compatible API)
 """
 
 import asyncio
 import json
 import logging
 import os
-from typing import AsyncIterable, Optional
+import struct
+import time
+from dataclasses import dataclass
+
+import aiohttp
+import numpy as np
 from dotenv import load_dotenv
 
-from livekit import agents, rtc
-from livekit.agents import AgentSession, Agent, AgentServer, ModelSettings
-from livekit.agents import stt, tts
+from livekit import rtc
+from livekit.agents import (
+    APIConnectionError,
+    APIConnectOptions,
+    DEFAULT_API_CONNECT_OPTIONS,
+    JobContext,
+    WorkerOptions,
+    cli,
+    stt,
+    tts,
+    utils,
+)
+from livekit.agents.voice import Agent, AgentSession
+from livekit.agents.voice import room_io
 from livekit.plugins import openai, silero
-
-# Import local service handlers
-from .stt_handler import WhisperLiveSTT
-from .tts_handler import PiperTTSClient
+# Note: Using custom PiperTTS implementation below instead of piper_tts plugin
+# The plugin has issues: sync requests blocking event loop, no chunked output
 
 # Load environment variables
 load_dotenv()
@@ -40,392 +52,715 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class TrinityAssistant(Agent):
-    """
-    AI Assistant for Trinity Smart City Platform - 100% Local Implementation.
+@dataclass
+class WhisperLiveKitOptions:
+    """Options for WhisperLiveKit STT."""
+    host: str
+    port: int
+    language: str
+    sample_rate: int
 
-    This agent uses custom STT/TTS nodes to integrate with local services:
-    - STT: WhisperLive (local WebSocket server)
-    - TTS: Piper (local HTTP server)
-    - LLM: Ollama (local inference server)
+
+class WhisperLiveKitSTT(stt.STT):
+    """
+    WhisperLiveKit Streaming STT Plugin for LiveKit Agents.
+
+    This implements streaming STT that bridges WebRTC audio to WhisperLiveKit WebSocket.
+    Uses --pcm-input mode for raw PCM audio (s16le format).
+
+    Architecture:
+    - streaming=True: LiveKit sends audio frames in real-time
+    - Audio frames are converted to raw PCM s16le and sent to WhisperLiveKit
+    - WhisperLiveKit returns transcription results via WebSocket
+
+    WhisperLiveKit Protocol (PCM mode):
+    1. Connect to WebSocket at ws://host:port
+    2. Send raw PCM audio as s16le (16-bit signed little-endian)
+    3. Receive JSON transcription messages with text
+
+    See: https://github.com/QuentinFuxa/WhisperLiveKit
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        host: str = "whisperlivekit",
+        port: int = 8765,
+        language: str = "en",
+        sample_rate: int = 16000,
+    ):
         super().__init__(
-            instructions="""You are Trinity, a friendly and conversational AI voice assistant.
-
-## Your Personality:
-- Warm, enthusiastic, and personable - like talking to a helpful friend
-- Natural and casual in speech - use contractions, conversational phrases
-- Genuinely curious about the user's needs and eager to help
-- Keep responses SHORT and conversational (1-3 sentences max)
-- Speak like a real person, not a formal assistant
-
-## How to Respond:
-- Start with natural acknowledgments: "Sure!", "Got it!", "Absolutely!", "Of course!"
-- Use casual language: "Hey", "Yeah", "Cool", "Awesome", instead of formal phrases
-- Ask follow-up questions to keep the conversation flowing
-- Mirror the user's energy and tone
-- If you don't know something, be honest: "Hmm, I'm not sure about that one"
-
-## What to Avoid:
-- NO long-winded explanations or lists unless specifically asked
-- NO formal language like "I would be happy to assist you"
-- NO robotic phrases like "As an AI assistant"
-- Don't apologize unless truly necessary
-- Keep it natural and brief!
-
-## Examples of Good Responses:
-User: "What's the weather?"
-You: "Let me check that for you! What city are you in?"
-
-User: "Tell me about city services"
-You: "Sure thing! We've got lots of services available. What are you looking for specifically - transportation, utilities, or something else?"
-
-Remember: You're having a CONVERSATION, not giving a presentation. Keep it short, natural, and engaging!"""
+            capabilities=stt.STTCapabilities(
+                streaming=True,
+                interim_results=True,
+            )
         )
-        logger.info("TrinityAssistant initialized with local STT/TTS/LLM")
+        self._opts = WhisperLiveKitOptions(
+            host=host,
+            port=port,
+            language=language,
+            sample_rate=sample_rate,
+        )
+        self._session = None
+        logger.info(f"WhisperLiveKitSTT initialized: {host}:{port} (streaming=True, pcm-input mode)")
 
-    async def stt_node(
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        """Ensure we have an aiohttp session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def _recognize_impl(
         self,
-        audio: AsyncIterable[rtc.AudioFrame],
-        model_settings: ModelSettings
-    ) -> Optional[AsyncIterable[stt.SpeechEvent]]:
-        """
-        Custom STT node using local WhisperLive service.
-
-        This overrides the default STT behavior to use our local WhisperLive server
-        instead of cloud-based STT services.
-        """
-        logger.info("Using local WhisperLive STT service")
-
-        # Create WhisperLive STT instance
-        whisperlive_host = os.getenv("WHISPERLIVE_HOST", "whisperlive")
-        whisperlive_port = int(os.getenv("WHISPERLIVE_PORT", "9090"))
-
-        whisper_stt = WhisperLiveSTT(
-            host=whisperlive_host,
-            port=whisperlive_port,
-            lang="en",
-            model="small",
+        buffer: utils.AudioBuffer,
+        *,
+        language: str | None = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+    ) -> stt.SpeechEvent:
+        """Required abstract method - not used for streaming STT."""
+        raise NotImplementedError(
+            "WhisperLiveKit STT is streaming-only, use stream() instead"
         )
 
-        # Create STT stream
-        stt_stream = whisper_stt.stream()
-
-        # Start the stream processing
-        async def process_audio():
-            """Push audio frames to WhisperLive"""
-            async for frame in audio:
-                await stt_stream.push_frame(frame)
-            await stt_stream.flush()
-
-        # Run audio processing in background
-        asyncio.create_task(process_audio())
-
-        # Return the speech events stream
-        return stt_stream
-
-    async def tts_node(
+    def stream(
         self,
-        text: AsyncIterable[str],
-        model_settings: ModelSettings
-    ) -> AsyncIterable[rtc.AudioFrame]:
-        """
-        Custom TTS node using local Piper service with sentence buffering.
-
-        This buffers text chunks into complete sentences before synthesizing,
-        which dramatically reduces latency and creates more natural speech flow.
-        """
-        logger.info("Using local Piper TTS service")
-
-        # Create Piper TTS client
-        piper_url = os.getenv("PIPER_URL", "http://piper-tts:5500")
-        piper_client = PiperTTSClient(
-            base_url=piper_url,
-            voice="en_US-lessac-medium",
+        *,
+        language: str | None = None,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+    ) -> "WhisperLiveKitSpeechStream":
+        """Create a streaming transcription session."""
+        opts = WhisperLiveKitOptions(
+            host=self._opts.host,
+            port=self._opts.port,
+            language=language or self._opts.language,
+            sample_rate=self._opts.sample_rate,
+        )
+        return WhisperLiveKitSpeechStream(
+            stt=self,
+            opts=opts,
+            conn_options=conn_options,
+            http_session=self._ensure_session(),
         )
 
-        import numpy as np
-        import re
 
-        # Sentence delimiters
-        sentence_endings = re.compile(r'[.!?]\s*')
+class WhisperLiveKitSpeechStream(stt.SpeechStream):
+    """
+    WhisperLiveKit streaming speech-to-text implementation.
 
-        # Buffer for accumulating text
-        buffer = ""
+    Bridges WebRTC audio from LiveKit to WhisperLiveKit WebSocket.
+    Uses PCM input mode (raw s16le audio) for direct audio streaming.
 
-        # Process text chunks and buffer into sentences
-        async for text_chunk in text:
-            if not text_chunk.strip():
-                continue
+    Key optimization: Uses stable text timeout for force-finalization
+    when interim text hasn't changed for a period.
+    """
 
-            buffer += text_chunk
+    STABLE_TEXT_TIMEOUT = 0.5  # Force finalize if text unchanged for 500ms
 
-            # Check if we have complete sentences
-            sentences = sentence_endings.split(buffer)
+    def __init__(
+        self,
+        *,
+        stt: WhisperLiveKitSTT,
+        opts: WhisperLiveKitOptions,
+        conn_options: APIConnectOptions,
+        http_session: aiohttp.ClientSession,
+    ):
+        super().__init__(stt=stt, conn_options=conn_options, sample_rate=opts.sample_rate)
+        self._opts = opts
+        self._session = http_session
+        self._speaking = False
+        self._session_id = f"wlk-{utils.shortuuid()}"
+        self._request_id = ""
+        self._last_interim_text = ""
+        self._last_interim_time = 0.0
+        self._finalized_texts: set[str] = set()
 
-            # If we have complete sentences (more than one part after split)
-            if len(sentences) > 1:
-                # Process all complete sentences
-                for sentence in sentences[:-1]:
-                    sentence = sentence.strip()
-                    if sentence:
-                        logger.debug(f"Synthesizing sentence: '{sentence[:50]}...'")
+        logger.info(f"[{self._session_id}] WhisperLiveKitSpeechStream created")
 
-                        try:
-                            # Get audio from Piper for the full sentence
-                            audio_data = await piper_client.synthesize(sentence + ".")
+    async def _run(self) -> None:
+        """Main streaming loop with WebSocket connection to WhisperLiveKit."""
+        closing_ws = False
+        ws_url = f"ws://{self._opts.host}:{self._opts.port}/asr"
 
-                            # Convert bytes to int16 array
-                            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+        logger.info(f"[{self._session_id}] Connecting to WhisperLiveKit at {ws_url}")
 
-                            # Create audio frame
-                            frame = rtc.AudioFrame(
-                                data=audio_array.tobytes(),
-                                sample_rate=22050,
-                                num_channels=1,
-                                samples_per_channel=len(audio_array),
+        @utils.log_exceptions(logger=logger)
+        async def send_task(ws: aiohttp.ClientWebSocketResponse) -> None:
+            """Send audio frames to WhisperLiveKit as raw PCM (s16le)."""
+            nonlocal closing_ws
+
+            # Buffer for accumulating audio samples
+            samples_per_chunk = self._opts.sample_rate // 20  # 50ms chunks
+            audio_buffer = utils.audio.AudioByteStream(
+                sample_rate=self._opts.sample_rate,
+                num_channels=1,
+                samples_per_channel=samples_per_chunk,
+            )
+
+            chunks_sent = 0
+            logged_format = False
+
+            async for data in self._input_ch:
+                if isinstance(data, rtc.AudioFrame):
+                    # Log audio format once
+                    if not logged_format:
+                        logger.info(
+                            f"[{self._session_id}] Audio format: "
+                            f"sample_rate={data.sample_rate}, "
+                            f"channels={data.num_channels}, "
+                            f"samples={data.samples_per_channel}, "
+                            f"bytes={len(data.data.tobytes())}"
+                        )
+                        logged_format = True
+
+                    frames = audio_buffer.write(data.data.tobytes())
+
+                    for frame in frames:
+                        # Send raw PCM s16le directly (WhisperLiveKit --pcm-input expects this)
+                        pcm_data = frame.data.tobytes()
+                        await ws.send_bytes(pcm_data)
+                        chunks_sent += 1
+
+                        if chunks_sent % 100 == 0:
+                            logger.debug(f"[{self._session_id}] Sent {chunks_sent} PCM chunks")
+
+                elif isinstance(data, self._FlushSentinel):
+                    frames = audio_buffer.flush()
+                    for frame in frames:
+                        pcm_data = frame.data.tobytes()
+                        await ws.send_bytes(pcm_data)
+
+            closing_ws = True
+            logger.info(f"[{self._session_id}] Audio streaming completed, sent {chunks_sent} chunks")
+
+        @utils.log_exceptions(logger=logger)
+        async def recv_task(ws: aiohttp.ClientWebSocketResponse) -> None:
+            """Receive transcription results from WhisperLiveKit."""
+            nonlocal closing_ws
+
+            async def check_stable_text() -> None:
+                """Background task to force-finalize text that has stabilized."""
+                while not closing_ws:
+                    await asyncio.sleep(0.1)
+
+                    if (
+                        self._last_interim_text
+                        and self._last_interim_time > 0
+                        and self._last_interim_text not in self._finalized_texts
+                    ):
+                        elapsed = time.time() - self._last_interim_time
+                        if elapsed >= self.STABLE_TEXT_TIMEOUT:
+                            text = self._last_interim_text
+                            logger.info(
+                                f"[{self._session_id}] STABLE TEXT ({elapsed:.2f}s) - force finalizing: '{text}'"
                             )
 
-                            yield frame
+                            self._request_id = utils.shortuuid()
+                            speech_data = stt.SpeechData(
+                                language=self._opts.language,
+                                text=text,
+                                confidence=1.0,
+                            )
+                            final_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                                request_id=self._request_id,
+                                alternatives=[speech_data],
+                            )
+                            self._event_ch.send_nowait(final_event)
 
-                        except Exception as e:
-                            logger.error(f"TTS synthesis error: {e}")
+                            self._finalized_texts.add(text)
+
+                            if self._speaking:
+                                self._speaking = False
+                                end_event = stt.SpeechEvent(
+                                    type=stt.SpeechEventType.END_OF_SPEECH
+                                )
+                                self._event_ch.send_nowait(end_event)
+
+                            self._last_interim_text = ""
+                            self._last_interim_time = 0
+
+            stable_check_task = asyncio.create_task(check_stable_text())
+
+            try:
+                while True:
+                    try:
+                        msg = await ws.receive()
+
+                        if msg.type in (
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.CLOSE,
+                            aiohttp.WSMsgType.CLOSING,
+                        ):
+                            if closing_ws:
+                                return
+                            raise APIConnectionError("WhisperLiveKit connection closed unexpectedly")
+
+                        if msg.type == aiohttp.WSMsgType.ERROR:
+                            raise APIConnectionError(f"WebSocket error: {ws.exception()}")
+
+                        if msg.type != aiohttp.WSMsgType.TEXT:
                             continue
 
-                # Keep the incomplete sentence in buffer
-                buffer = sentences[-1]
+                        # Parse WhisperLiveKit response
+                        try:
+                            data = json.loads(msg.data)
+                        except json.JSONDecodeError:
+                            logger.warning(f"[{self._session_id}] Invalid JSON from WhisperLiveKit")
+                            continue
 
-            # If buffer gets too long (> 200 chars), flush it anyway to avoid delays
-            elif len(buffer) > 200:
-                logger.debug(f"Flushing long buffer: '{buffer[:50]}...'")
+                        # WhisperLiveKit response format:
+                        # {
+                        #   'status': 'active_transcription',
+                        #   'lines': [{'speaker': -2, 'text': '...', 'start': '...', 'end': '...'}],
+                        #   'buffer_transcription': '...',  # interim text
+                        #   'remaining_time_transcription': X.X,
+                        # }
+
+                        text = ""
+                        is_final = False
+
+                        # WhisperLiveKit format - check lines and buffer
+                        if "lines" in data or "buffer_transcription" in data:
+                            # Check buffer_transcription for interim results (ongoing speech)
+                            buffer_text = data.get("buffer_transcription", "").strip()
+
+                            # Check lines for finalized segments
+                            lines = data.get("lines", [])
+                            new_final_text = ""
+                            for line in lines:
+                                line_text = line.get("text", "").strip()
+                                # Only process lines we haven't seen before
+                                if line_text and line_text not in self._finalized_texts:
+                                    new_final_text = line_text
+
+                            # Priority: new final text > buffer (interim)
+                            if new_final_text:
+                                text = new_final_text
+                                is_final = True
+                                logger.info(f"[{self._session_id}] WLK FINAL: '{text}'")
+                            elif buffer_text and buffer_text != self._last_interim_text:
+                                text = buffer_text
+                                is_final = False
+                                logger.debug(f"[{self._session_id}] WLK interim: '{text}'")
+
+                        # Fallback formats
+                        elif "text" in data:
+                            text = data.get("text", "").strip()
+                            is_final = data.get("is_final", False) or data.get("completed", False)
+                        elif "segments" in data:
+                            segments = data.get("segments", [])
+                            for seg in segments:
+                                seg_text = seg.get("text", "").strip()
+                                if seg_text:
+                                    text = seg_text
+                                    is_final = seg.get("completed", False) or seg.get("is_final", False)
+
+                        if not text:
+                            continue
+
+                        self._request_id = utils.shortuuid()
+
+                        if not self._speaking:
+                            self._speaking = True
+                            start_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.START_OF_SPEECH
+                            )
+                            self._event_ch.send_nowait(start_event)
+                            logger.debug(f"[{self._session_id}] Speech started")
+
+                        speech_data = stt.SpeechData(
+                            language=self._opts.language,
+                            text=text,
+                            confidence=1.0,
+                        )
+
+                        if text in self._finalized_texts:
+                            logger.debug(f"[{self._session_id}] Skipping already finalized: '{text}'")
+                            continue
+
+                        if is_final:
+                            final_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                                request_id=self._request_id,
+                                alternatives=[speech_data],
+                            )
+                            self._event_ch.send_nowait(final_event)
+                            logger.info(f"[{self._session_id}] Final: '{text}'")
+
+                            self._finalized_texts.add(text)
+
+                            if self._speaking:
+                                self._speaking = False
+                                end_event = stt.SpeechEvent(
+                                    type=stt.SpeechEventType.END_OF_SPEECH
+                                )
+                                self._event_ch.send_nowait(end_event)
+
+                            self._last_interim_text = ""
+                            self._last_interim_time = 0
+                        else:
+                            # Interim transcript
+                            if text != self._last_interim_text:
+                                self._last_interim_text = text
+                                self._last_interim_time = time.time()
+                                logger.debug(f"[{self._session_id}] Interim: '{text}'")
+
+                            interim_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
+                                request_id=self._request_id,
+                                alternatives=[speech_data],
+                            )
+                            self._event_ch.send_nowait(interim_event)
+
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        if not closing_ws:
+                            logger.error(f"[{self._session_id}] Error in recv_task: {e}")
+                            raise
+                        return
+            finally:
+                stable_check_task.cancel()
                 try:
-                    audio_data = await piper_client.synthesize(buffer)
-                    audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                    frame = rtc.AudioFrame(
-                        data=audio_array.tobytes(),
-                        sample_rate=22050,
-                        num_channels=1,
-                        samples_per_channel=len(audio_array),
-                    )
-                    yield frame
-                    buffer = ""
-                except Exception as e:
-                    logger.error(f"TTS synthesis error: {e}")
-                    buffer = ""
+                    await stable_check_task
+                except asyncio.CancelledError:
+                    pass
 
-        # Flush any remaining text in buffer
-        if buffer.strip():
-            logger.debug(f"Flushing final buffer: '{buffer[:50]}...'")
+        # Connect to WhisperLiveKit WebSocket
+        ws: aiohttp.ClientWebSocketResponse | None = None
+
+        try:
+            ws = await asyncio.wait_for(
+                self._session.ws_connect(ws_url, ssl=False),
+                timeout=self._conn_options.timeout,
+            )
+            logger.info(f"[{self._session_id}] Connected to WhisperLiveKit")
+
+            # Run send and receive tasks concurrently
+            tasks = [
+                asyncio.create_task(send_task(ws)),
+                asyncio.create_task(recv_task(ws)),
+            ]
+
             try:
-                audio_data = await piper_client.synthesize(buffer)
-                audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                frame = rtc.AudioFrame(
-                    data=audio_array.tobytes(),
-                    sample_rate=22050,
-                    num_channels=1,
-                    samples_per_channel=len(audio_array),
-                )
-                yield frame
-            except Exception as e:
-                logger.error(f"TTS synthesis error: {e}")
+                await asyncio.gather(*tasks)
+            finally:
+                await utils.aio.gracefully_cancel(*tasks)
+
+        except asyncio.TimeoutError:
+            raise APIConnectionError(f"Timeout connecting to WhisperLiveKit at {ws_url}")
+        except aiohttp.ClientError as e:
+            raise APIConnectionError(f"Failed to connect to WhisperLiveKit: {e}")
+        finally:
+            if ws is not None and not ws.closed:
+                await ws.close()
+            logger.info(f"[{self._session_id}] WhisperLiveKit connection closed")
 
 
-# Create agent server
-server = AgentServer()
+# =============================================================================
+# Custom Async Piper TTS Implementation
+# =============================================================================
+# The livekit-plugins-piper-tts has issues:
+# 1. Uses sync requests.post() which blocks the event loop
+# 2. Pushes all audio at once causing stuttering
+# This implementation uses async httpx and chunked audio output
+
+PIPER_SAMPLE_RATE = 22050
+PIPER_NUM_CHANNELS = 1
+PIPER_CHUNK_SIZE = 4096  # Send audio in smaller chunks to prevent stuttering
 
 
-@server.rtc_session()
-async def entrypoint(ctx: agents.JobContext):
+class AsyncPiperTTS(tts.TTS):
+    """Async Piper TTS with chunked audio output for smooth playback."""
+
+    def __init__(self, base_url: str):
+        super().__init__(
+            capabilities=tts.TTSCapabilities(streaming=False),
+            sample_rate=PIPER_SAMPLE_RATE,
+            num_channels=PIPER_NUM_CHANNELS,
+        )
+        self._base_url = base_url
+        self._session: aiohttp.ClientSession | None = None
+
+    def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    def synthesize(self, text: str, *, conn_options=DEFAULT_API_CONNECT_OPTIONS):
+        return AsyncPiperChunkedStream(
+            tts=self,
+            input_text=text,
+            conn_options=conn_options,
+            base_url=self._base_url,
+            http_session=self._ensure_session(),
+        )
+
+
+class AsyncPiperChunkedStream(tts.ChunkedStream):
+    """Async chunked stream for Piper TTS with proper audio chunking."""
+
+    def __init__(
+        self,
+        *,
+        tts: AsyncPiperTTS,
+        input_text: str,
+        conn_options,
+        base_url: str,
+        http_session: aiohttp.ClientSession,
+    ):
+        super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
+        self._base_url = base_url
+        self._session = http_session
+
+    async def _run(self, output_emitter: tts.AudioEmitter):
+        """Fetch audio from Piper and emit in chunks for smooth playback."""
+        synthesis_start = time.time()
+
+        try:
+            # Async HTTP request to Piper TTS
+            async with self._session.post(
+                self._base_url,
+                headers={"Content-Type": "application/json"},
+                json={"text": self.input_text},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Piper TTS error: {response.status} - {error_text}")
+                    return
+
+                # Read full audio (Piper returns complete WAV)
+                wav_data = await response.read()
+
+            fetch_time = time.time() - synthesis_start
+            logger.info(f"[TTS] Piper synthesis took {fetch_time:.2f}s for: '{self.input_text[:50]}...'")
+
+            # Parse WAV and extract PCM data
+            # WAV header is 44 bytes for standard PCM
+            if len(wav_data) < 44:
+                logger.error(f"[TTS] Invalid WAV data: too short ({len(wav_data)} bytes)")
+                return
+
+            # Skip WAV header (44 bytes) to get raw PCM
+            pcm_data = wav_data[44:]
+
+            # Initialize emitter
+            output_emitter.initialize(
+                request_id=utils.shortuuid(),
+                sample_rate=PIPER_SAMPLE_RATE,
+                num_channels=PIPER_NUM_CHANNELS,
+                mime_type="audio/pcm",
+            )
+
+            # Push audio in chunks for smooth playback
+            # This prevents the "stuttering then smooth" behavior
+            offset = 0
+            chunks_sent = 0
+            while offset < len(pcm_data):
+                chunk = pcm_data[offset:offset + PIPER_CHUNK_SIZE]
+                output_emitter.push(chunk)
+                offset += PIPER_CHUNK_SIZE
+                chunks_sent += 1
+                # Small yield to allow other tasks to run
+                if chunks_sent % 10 == 0:
+                    await asyncio.sleep(0)
+
+            output_emitter.flush()
+            logger.debug(f"[TTS] Sent {chunks_sent} audio chunks")
+
+        except asyncio.TimeoutError:
+            logger.error("[TTS] Piper TTS request timed out")
+        except aiohttp.ClientError as e:
+            logger.error(f"[TTS] Piper TTS connection error: {e}")
+        except Exception as e:
+            logger.error(f"[TTS] Piper TTS error: {e}")
+
+
+def create_voice_pipeline(
+    ollama_url: str,
+    ollama_model: str,
+    piper_tts_url: str,
+    whisperlivekit_host: str,
+    whisperlivekit_port: int,
+) -> tuple:
+    """
+    Create the voice pipeline components.
+
+    Returns tuple of (stt, llm, tts, vad) for use with AgentSession.
+
+    Pipeline: Audio (WebRTC) -> STT (WhisperLiveKit) -> LLM (Ollama) -> TTS (Piper) -> Audio
+    """
+    # Create WhisperLiveKit STT instance
+    whisper_stt = WhisperLiveKitSTT(
+        host=whisperlivekit_host,
+        port=whisperlivekit_port,
+    )
+
+    # Create Ollama LLM with OpenAI-compatible API
+    llm = openai.LLM.with_ollama(
+        model=ollama_model,
+        base_url=f"{ollama_url}/v1",
+    )
+
+    # Create async Piper TTS with chunked output
+    piper_tts = AsyncPiperTTS(f"{piper_tts_url}/api/synthesize")
+
+    # Tune Silero VAD for faster end-of-speech detection
+    vad = silero.VAD.load(
+        min_speech_duration=0.05,
+        min_silence_duration=0.25,
+        activation_threshold=0.45,
+    )
+
+    logger.info(f"Voice pipeline created:")
+    logger.info(f"  - Ollama: {ollama_url}, model: {ollama_model}")
+    logger.info(f"  - WhisperLiveKit: {whisperlivekit_host}:{whisperlivekit_port}")
+    logger.info(f"  - Piper TTS: {piper_tts_url}")
+
+    return whisper_stt, llm, piper_tts, vad
+
+
+async def entrypoint(ctx: JobContext):
     """
     Main entry point for the AI voice agent.
-
-    This function is called when:
-    1. A new room is created
-    2. A participant joins (including SIP callers)
-    3. Agent dispatch rules trigger
     """
-    logger.info(f"="*80)
+    logger.info("=" * 80)
     logger.info(f"Agent entrypoint called for room: {ctx.room.name}")
-    logger.info(f"="*80)
+    logger.info("=" * 80)
 
-    try:
-        # Get configuration from environment
-        ollama_url = os.getenv("OLLAMA_URL", "http://192.168.1.120:11434")
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        whisperlive_host = os.getenv("WHISPERLIVE_HOST", "whisperlive")
-        whisperlive_port = os.getenv("WHISPERLIVE_PORT", "9090")
-        piper_url = os.getenv("PIPER_URL", "http://piper-tts:5500")
+    # Get configuration from environment
+    ollama_url = os.getenv("OLLAMA_URL", "http://192.168.1.120:11434")
+    ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    piper_tts_url = os.getenv("PIPER_TTS_URL", "http://piper-tts:5500")
+    whisperlivekit_host = os.getenv("WHISPERLIVEKIT_HOST", "whisperlivekit")
+    whisperlivekit_port = int(os.getenv("WHISPERLIVEKIT_PORT", "8765"))
 
-        logger.info(f"Configuration (100% Local):")
-        logger.info(f"  - Ollama LLM: {ollama_url} (model: {ollama_model})")
-        logger.info(f"  - WhisperLive STT: {whisperlive_host}:{whisperlive_port}")
-        logger.info(f"  - Piper TTS: {piper_url}")
-        logger.info(f"  - Silero VAD: local")
+    logger.info(f"Configuration:")
+    logger.info(f"  - Ollama URL: {ollama_url}")
+    logger.info(f"  - Ollama Model: {ollama_model}")
+    logger.info(f"  - WhisperLiveKit: {whisperlivekit_host}:{whisperlivekit_port}")
+    logger.info(f"  - Piper TTS URL: {piper_tts_url}")
 
-        # Create AgentSession with Ollama LLM
-        # Note: STT and TTS are handled by custom nodes in TrinityAssistant
-        session = AgentSession(
-            # Use Ollama for LLM via official method
-            llm=openai.LLM.with_ollama(
-                model=ollama_model,
-                base_url=f"{ollama_url}/v1",
+    # Create the voice pipeline components
+    stt, llm, tts, vad = create_voice_pipeline(
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
+        piper_tts_url=piper_tts_url,
+        whisperlivekit_host=whisperlivekit_host,
+        whisperlivekit_port=whisperlivekit_port,
+    )
+
+    # Create the agent with just instructions
+    agent = Agent(
+        instructions="""You are Trinity, a helpful AI voice assistant.
+You help users with their questions in a friendly, conversational manner.
+Keep your responses concise and natural for voice conversation.
+Speak in a warm, friendly tone. Avoid using special characters or emojis.""",
+    )
+
+    # Create session with STT, LLM, TTS, VAD components
+    # Per LiveKit docs: Session needs these components, not the Agent
+    session = AgentSession(
+        stt=stt,
+        llm=llm,
+        tts=tts,
+        vad=vad,
+        turn_detection="vad",
+        min_endpointing_delay=0.3,
+    )
+
+    # Timing tracking for latency analysis
+    timing_data = {
+        "speech_start": 0,
+        "stt_final": 0,
+        "llm_start": 0,
+        "llm_first_token": 0,
+        "llm_complete": 0,
+        "tts_start": 0,
+        "tts_first_audio": 0,
+    }
+
+    # Set up event handlers for debugging and timing
+    @session.on("user_input_transcribed")
+    def on_user_transcript(ev):
+        """Handle user speech transcription."""
+        if ev.is_final:
+            timing_data["stt_final"] = time.time()
+            stt_latency = timing_data["stt_final"] - timing_data["speech_start"] if timing_data["speech_start"] > 0 else 0
+            logger.info(f"[TIMING] STT Final: '{ev.transcript}' (STT latency: {stt_latency:.2f}s)")
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(ev):
+        """Handle agent state changes with timing."""
+        now = time.time()
+
+        if ev.new_state == "listening":
+            timing_data["speech_start"] = now
+            logger.info(f"[STATE] {ev.old_state} -> {ev.new_state}")
+        elif ev.new_state == "thinking":
+            timing_data["llm_start"] = now
+            if timing_data["stt_final"] > 0:
+                stt_to_llm = now - timing_data["stt_final"]
+                logger.info(f"[STATE] {ev.old_state} -> {ev.new_state} (STT->LLM: {stt_to_llm:.2f}s)")
+            else:
+                logger.info(f"[STATE] {ev.old_state} -> {ev.new_state}")
+        elif ev.new_state == "speaking":
+            timing_data["tts_start"] = now
+            if timing_data["llm_start"] > 0:
+                llm_latency = now - timing_data["llm_start"]
+                total_latency = now - timing_data["speech_start"] if timing_data["speech_start"] > 0 else 0
+                logger.info(f"[STATE] {ev.old_state} -> {ev.new_state} (LLM: {llm_latency:.2f}s, Total: {total_latency:.2f}s)")
+            else:
+                logger.info(f"[STATE] {ev.old_state} -> {ev.new_state}")
+        else:
+            logger.info(f"[STATE] {ev.old_state} -> {ev.new_state}")
+
+    @session.on("user_started_speaking")
+    def on_user_started_speaking(ev):
+        timing_data["speech_start"] = time.time()
+        logger.info(f"[VAD] User started speaking")
+
+    @session.on("user_stopped_speaking")
+    def on_user_stopped_speaking(ev):
+        if timing_data["speech_start"] > 0:
+            speech_duration = time.time() - timing_data["speech_start"]
+            logger.info(f"[VAD] User stopped speaking (duration: {speech_duration:.2f}s)")
+
+    # Start the session
+    logger.info("Starting AgentSession...")
+
+    await session.start(
+        agent=agent,
+        room=ctx.room,
+        room_options=room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(
+                sample_rate=16000,
+                num_channels=1,
             ),
-            # VAD is still set here for the pipeline
-            vad=silero.VAD.load(),
-            # Note: We don't set stt/tts here because they're handled by custom nodes
-        )
+        ),
+    )
 
-        logger.info("✓ AgentSession created with local Ollama LLM")
+    logger.info("=" * 80)
+    logger.info("AGENT SESSION STARTED SUCCESSFULLY")
+    logger.info(f"  Room: {ctx.room.name}")
+    logger.info("  Pipeline: Audio -> WhisperLiveKit STT -> Ollama LLM -> Piper TTS -> Audio")
+    logger.info("=" * 80)
 
-        # Set up room event handlers
-        @ctx.room.on("participant_connected")
-        def on_participant_connected(participant: rtc.RemoteParticipant):
-            logger.info(
-                f"🔵 Participant connected: {participant.identity} (SID: {participant.sid})")
-            logger.info(f"   - Kind: {participant.kind}")
-
-            # Check if this is a SIP caller
-            if hasattr(participant, 'kind') and str(participant.kind) == "ParticipantKind.PARTICIPANT_KIND_SIP":
-                logger.info("📞 SIP caller detected - agent will respond to their audio")
-
-        @ctx.room.on("participant_disconnected")
-        def on_participant_disconnected(participant: rtc.RemoteParticipant):
-            logger.info(f"🔴 Participant disconnected: {participant.identity}")
-
-        # Set up session event handlers
-        @session.on("user_input_transcribed")
-        def on_user_transcript(transcript):
-            """Handle user speech transcription and send to UI."""
-            if transcript.is_final:
-                text = transcript.transcript
-                logger.info(f"👤 USER SAID: '{text}'")
-
-                # Send transcript to frontend via data channel
-                import json
-                from datetime import datetime
-                try:
-                    transcript_data = json.dumps({
-                        "type": "transcript",
-                        "speaker": "user",
-                        "text": text,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    })
-                    ctx.room.local_participant.publish_data(
-                        payload=transcript_data.encode("utf-8"),
-                        topic="transcripts",
-                    )
-                    logger.debug(f"✓ Sent user transcript to UI: '{text[:50]}...'")
-                except Exception as e:
-                    logger.error(f"Failed to send user transcript: {e}")
-
-        @session.on("conversation_item_added")
-        def on_conversation_item(item):
-            """Handle conversation items and send agent responses to UI."""
-            logger.info(f"💬 Conversation item added:")
-            logger.info(f"   - Role: {item.role}")
-            if hasattr(item, 'content') and item.content:
-                content_preview = item.content[:100] if len(item.content) > 100 else item.content
-                logger.info(f"   - Content: {content_preview}")
-
-                # If this is an agent response, send it to the UI
-                if item.role == "assistant" and item.content:
-                    import json
-                    from datetime import datetime
-                    try:
-                        transcript_data = json.dumps({
-                            "type": "transcript",
-                            "speaker": "assistant",
-                            "text": item.content,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
-                        ctx.room.local_participant.publish_data(
-                            payload=transcript_data.encode("utf-8"),
-                            topic="transcripts",
-                        )
-                        logger.debug(f"✓ Sent agent transcript to UI: '{item.content[:50]}...'")
-                    except Exception as e:
-                        logger.error(f"Failed to send agent transcript: {e}")
-
-        @session.on("agent_state_changed")
-        def on_agent_state(state):
-            """Handle agent state changes and send to UI."""
-            logger.info(f"🤖 Agent state changed: {state}")
-
-            # Send state change to UI
-            import json
-            try:
-                state_data = json.dumps({
-                    "type": "agent_state",
-                    "state": str(state),
-                })
-                ctx.room.local_participant.publish_data(
-                    payload=state_data.encode("utf-8"),
-                    topic="agent_status",
-                )
-            except Exception as e:
-                logger.error(f"Failed to send agent state: {e}")
-
-        @session.on("user_state_changed")
-        def on_user_state(state):
-            """Handle user state changes and send to UI."""
-            logger.info(f"👤 User state changed: {state}")
-
-            # Send state change to UI
-            import json
-            try:
-                state_data = json.dumps({
-                    "type": "user_state",
-                    "state": str(state),
-                })
-                ctx.room.local_participant.publish_data(
-                    payload=state_data.encode("utf-8"),
-                    topic="user_status",
-                )
-            except Exception as e:
-                logger.error(f"Failed to send user state: {e}")
-
-        # Create the agent instance (with custom STT/TTS nodes)
-        logger.info("Creating TrinityAssistant agent with custom nodes...")
-        agent = TrinityAssistant()
-        logger.info("✓ TrinityAssistant agent created")
-
-        # Start the agent session
-        logger.info("Starting agent session...")
-        await session.start(
-            agent=agent,
-            room=ctx.room
-        )
-
-        logger.info("="*80)
-        logger.info("✓ AGENT SESSION STARTED SUCCESSFULLY")
-        logger.info("  The agent is now listening for user input...")
-        logger.info("  Pipeline: Audio → VAD → STT (WhisperLive) → LLM (Ollama) → TTS (Piper) → Audio")
-        logger.info("  ALL SERVICES ARE LOCAL - NO CLOUD DEPENDENCIES")
-        logger.info("="*80)
-
-        # Generate initial greeting
-        logger.info("Generating initial greeting...")
-        await session.generate_reply(
-            instructions="Greet the user warmly and offer your assistance."
-        )
-        logger.info("✓ Greeting generated")
-
-    except Exception as e:
-        logger.error("="*80)
-        logger.error(f"✗ ERROR IN AGENT ENTRYPOINT: {e}")
-        logger.error("="*80)
-        logger.exception("Full traceback:")
-        raise
+    # Generate initial greeting AFTER session is started
+    # This is the correct way per LiveKit docs
+    logger.info("Generating initial greeting...")
+    session.generate_reply(
+        instructions="Greet the user warmly and briefly. Ask how you can help them today. Keep it short - one or two sentences."
+    )
 
 
 if __name__ == "__main__":
-    logger.info("Starting LiveKit AI Agent Worker (100% Local)...")
+    logger.info("Starting LiveKit AI Agent Worker...")
     logger.info(f"LiveKit URL: {os.getenv('LIVEKIT_URL', 'not set')}")
-    logger.info(f"Ollama URL: {os.getenv('OLLAMA_URL', 'not set')}")
-    logger.info(f"WhisperLive: {os.getenv('WHISPERLIVE_HOST', 'whisperlive')}:{os.getenv('WHISPERLIVE_PORT', '9090')}")
-    logger.info(f"Piper TTS: {os.getenv('PIPER_URL', 'not set')}")
+    logger.info(f"Ollama URL: {os.getenv('OLLAMA_URL', 'http://192.168.1.120:11434')}")
 
-    # Run the agent with AgentServer pattern (v1.x)
-    agents.cli.run_app(server)
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+        )
+    )

@@ -211,58 +211,161 @@ class WhisperLiveSTT(stt.STT):
         model: str = "small",
         use_vad: bool = True,
     ):
-        # Ensure EventEmitter state exists for metrics callbacks in AgentSession
-        try:
-            super().__init__()
-        except Exception:
-            pass
-        if not hasattr(self, "_events"):
-            self._events = {}
+        # Get STTCapabilities class
+        Cap = getattr(stt, "STTCapabilities", None)
+        if Cap is None:
+            Cap = getattr(stt, "Capabilities", None)
 
-        # Declare capabilities so AgentSession knows this STT supports streaming
-        Cap = getattr(stt, "Capabilities", None)
+        # Create capabilities - streaming=False so framework wraps with StreamAdapter+VAD
         if Cap:
-            self._capabilities = Cap(
-                streaming=True,
-                interim_results=True,
-                metrics=True,
+            capabilities = Cap(
+                streaming=False,  # Let framework wrap with VAD via StreamAdapter
+                interim_results=False,
             )
         else:
-            self._capabilities = type(
+            capabilities = type(
                 "Caps",
                 (),
-                {"streaming": True, "interim_results": True, "metrics": True},
+                {"streaming": False, "interim_results": False},
             )()
 
+        # Call parent __init__ with capabilities - this sets _label and other required attributes
+        super().__init__(capabilities=capabilities)
+
+        # Store our config
         self.host = host
         self.port = port
         self.lang = lang
         self._wl_model = model
         self.use_vad = use_vad
 
+        logger.info(f"WhisperLiveSTT initialized: {host}:{port}, model={model}, lang={lang}")
+
     async def _recognize_impl(
         self,
-        audio: bytes,
+        buffer,  # AudioBuffer from livekit.agents.utils
         *,
-        sample_rate: int,
-        num_channels: int,
+        language=None,
+        conn_options=None,
     ):
         """
-        Fallback non-streaming recognize; WhisperLive is streaming-only here,
-        so return an empty final alternative to satisfy the abstract interface.
+        Non-streaming recognize - called by StreamAdapter after VAD detects end of speech.
+        Sends audio buffer to WhisperLive and returns transcription.
         """
-        alt_cls = SpeechAlternative or getattr(stt, "SpeechAlternative", None)
-        alt = alt_cls(text="") if alt_cls else None
+        try:
+            # Extract audio bytes from buffer
+            if hasattr(buffer, 'data'):
+                audio_bytes = bytes(buffer.data)
+            elif hasattr(buffer, 'to_wav'):
+                # AudioBuffer has to_wav method
+                audio_bytes = buffer.to_wav()
+            elif isinstance(buffer, (bytes, bytearray)):
+                audio_bytes = bytes(buffer)
+            else:
+                # Try to get raw PCM data
+                audio_bytes = bytes(buffer)
 
-        if RecognitionBase:
-            return RecognitionBase(alternatives=[alt] if alt else [])
+            logger.info(f"WhisperLive recognize: {len(audio_bytes)} bytes of audio")
 
-        event_cls = SpeechEventBase or getattr(stt, "SpeechEvent", None)
-        evt_type = SpeechEventType or getattr(stt, "SpeechEventType", None)
-        if event_cls and evt_type:
-            return event_cls(type=evt_type.FINAL, alternatives=[alt] if alt else [])
+            # Skip if audio is too short (less than 0.1 seconds at 16kHz, 16-bit)
+            if len(audio_bytes) < 3200:
+                logger.warning(f"Audio too short ({len(audio_bytes)} bytes), skipping")
+                return stt.SpeechEvent(
+                    type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                    alternatives=[],
+                )
 
-        return None
+            # Connect to WhisperLive and send audio
+            client = WhisperLiveClient(
+                host=self.host,
+                port=self.port,
+                lang=self.lang,
+                model=self._wl_model,
+                use_vad=False,  # VAD already done by LiveKit
+            )
+
+            await client.connect()
+
+            # Send audio in chunks (WhisperLive expects streaming chunks)
+            # Chunk size: 8000 bytes = 0.25 seconds at 16kHz, 16-bit mono
+            chunk_size = 8000
+            for i in range(0, len(audio_bytes), chunk_size):
+                chunk = audio_bytes[i:i + chunk_size]
+                await client.send_audio(chunk)
+                # Small delay between chunks to simulate streaming
+                await asyncio.sleep(0.01)
+
+            logger.debug(f"Sent {len(audio_bytes)} bytes in {(len(audio_bytes) + chunk_size - 1) // chunk_size} chunks")
+
+            # Wait for transcription with timeout
+            transcript_text = ""
+            try:
+                # Give WhisperLive time to process - longer wait for CPU processing
+                await asyncio.sleep(1.0)
+
+                # Try to get response with timeout - wait longer for CPU-based Whisper
+                for attempt in range(20):  # Max 10 seconds total
+                    try:
+                        data = await asyncio.wait_for(
+                            client.receive_transcription(),
+                            timeout=0.5
+                        )
+
+                        if data is None:
+                            logger.debug("Received None from WhisperLive")
+                            break
+
+                        logger.debug(f"WhisperLive response: {data}")
+
+                        # Handle different response formats from WhisperLive
+                        if "segments" in data:
+                            for seg in data.get("segments", []):
+                                text = seg.get("text", "").strip()
+                                if text:
+                                    transcript_text = text  # Use latest segment
+                                    logger.debug(f"Got segment text: '{text}'")
+
+                        # Check for message field (some WhisperLive versions use this)
+                        if "message" in data and data["message"] not in ["WAIT", "SERVER_READY"]:
+                            msg = data.get("message", "").strip()
+                            if msg:
+                                transcript_text = msg
+
+                        # If we have text, wait a bit more for final result
+                        if transcript_text.strip() and attempt >= 3:
+                            break
+
+                    except asyncio.TimeoutError:
+                        if transcript_text.strip() and attempt >= 5:
+                            # We have some text, use it
+                            break
+                        continue
+
+            finally:
+                await client.close()
+
+            transcript_text = transcript_text.strip()
+            logger.info(f"WhisperLive transcription: '{transcript_text}'")
+
+            # Return SpeechEvent with transcription
+            SpeechData = getattr(stt, "SpeechData", None)
+            if SpeechData:
+                alt = SpeechData(text=transcript_text, language=self.lang)
+            else:
+                alt = stt.SpeechAlternative(text=transcript_text)
+
+            return stt.SpeechEvent(
+                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                alternatives=[alt] if transcript_text else [],
+            )
+
+        except Exception as e:
+            logger.error(f"WhisperLive recognize error: {e}")
+            # Return empty result on error
+            return stt.SpeechEvent(
+                type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                alternatives=[],
+            )
 
     def stream(
         self,

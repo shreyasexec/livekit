@@ -28,7 +28,7 @@ Build a **100% on-premises, open-source** LiveKit-based AI voice agent platform 
 
 **Dont create Any documentation file untill it i asked manually
 
-**Before any implementation:**
+**Before any implementation:
 1. Check official docs for latest API signatures
 2. Verify method names and parameters haven't changed
 3. Look for official examples in GitHub repos
@@ -631,3 +631,5 @@ tailwindcss
 7. Agent responds with synthesized speech to entire room
 8. All participants hear agent responses
 9. No cloud dependencies - all services on-prem (except Ollama at 192.168.1.120)
+
+```

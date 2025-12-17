@@ -59,41 +59,55 @@ services:
 
     # Removed profiles to auto-start with docker compose up
 
-  # WhisperLive STT Service - CPU version
-  whisperlive:
-    image: ghcr.io/collabora/whisperlive-cpu:latest
+  # WhisperLiveKit STT Service - Using --pcm-input for raw PCM audio from LiveKit
+  # See: https://github.com/QuentinFuxa/WhisperLiveKit
+  whisperlivekit:
+    build:
+      context: ./whisperlivekit
+      dockerfile: Dockerfile
     ports:
-      - "9090:9090"
+      - "8765:8765"
+    volumes:
+      - whisper_cache:/root/.cache/huggingface  # Persist Whisper model cache
     environment:
       - OMP_NUM_THREADS=4
+      - HF_HOME=/root/.cache/huggingface
     command:
-      - python3
-      - run_server.py
+      - wlk
+      - --host
+      - "0.0.0.0"
       - --port
-      - "9090"
-      - --backend
-      - faster_whisper
-      - --no_single_model
-      - --max_clients
-      - "10"
-      - --max_connection_time
-      - "600"
+      - "8765"
+      - --model
+      - "small"
+      - --language
+      - "en"
+      - --pcm-input
+      # Latency optimization settings
+      - --min-chunk-size
+      - "0.5"
+      # Use faster local agreement backend for lower latency
+      - --backend-policy
+      - "localagreement"
+      # Faster buffer trimming
+      - --buffer_trimming
+      - "segment"
+      - --buffer_trimming_sec
+      - "5"
+      # DISABLE WhisperLiveKit VAD - LiveKit's Silero VAD handles turn detection
+      # Having two VADs adds latency and can cause conflicts
+      - --no-vad
     networks:
       - livekit-network
     healthcheck:
       test:
         - CMD-SHELL
-        - python3 - <<'PY'
-          import socket
-          s = socket.socket()
-          s.settimeout(2)
-          s.connect(("localhost", 9090))
-          s.close()
-          PY
+        - >
+          python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',8765)); s.close()"
       interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 45s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
     restart: unless-stopped
 
   # Piper TTS Service
@@ -122,30 +136,31 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    volumes:
+      - ./backend/agent:/app/agent:ro  # Live code sync for development
     environment:
       - LIVEKIT_URL=http://livekit:7880
       - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.1.120:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
-      - WHISPERLIVE_HOST=whisperlive
-      - WHISPERLIVE_PORT=9090
-      - PIPER_URL=http://piper-tts:5500
+      # WhisperLiveKit for STT (using --pcm-input mode)
+      - WHISPERLIVEKIT_HOST=whisperlivekit
+      - WHISPERLIVEKIT_PORT=8765
+      # Piper TTS URL for livekit-plugins-piper-tts
+      - PIPER_TTS_URL=http://piper-tts:5500
     depends_on:
       livekit:
         condition: service_healthy
       redis:
         condition: service_healthy
-      whisperlive:
-        condition: service_started
+      whisperlivekit:
+        condition: service_healthy
       piper-tts:
         condition: service_healthy
-    #command: ["livekit-agents", "devserver", "agent.worker:server"]
-
     command: ["python", "-m", "agent.worker", "dev"]
-
     networks:
       - livekit-network
     restart: unless-stopped
@@ -161,7 +176,8 @@ services:
       - "8000:8000"
     environment:
       - LIVEKIT_URL=http://livekit:7880
-      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
+      # Use port 3000 so WebSocket goes through Vite proxy (avoids SSL cert issues)
+      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:3000
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
@@ -208,8 +224,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_LIVEKIT_URL=wss://192.168.20.224:7880
-      - VITE_API_URL=https://192.168.20.224
+      # Use same origin WebSocket (goes through Vite proxy to livekit:7880)
+      - VITE_LIVEKIT_URL=wss://192.168.20.224:3000
+      # Empty VITE_API_URL means relative paths, goes through Vite proxy to backend
+      - VITE_API_URL=
     depends_on:
       backend:
         condition: service_healthy
@@ -224,3 +242,4 @@ networks:
 volumes:
   redis_data:
   piper_voices:
+  whisper_cache:
