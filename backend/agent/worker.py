@@ -470,18 +470,18 @@ PIPER_CHUNK_SIZE = 4096  # Send audio in smaller chunks to prevent stuttering
 
 
 class AsyncPiperTTS(tts.TTS):
-    """Async Piper TTS with streaming output for low latency playback."""
+    """Async Piper TTS with chunked audio output for smooth playback."""
 
     def __init__(self, base_url: str):
         super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=True),  # Enable streaming
+            capabilities=tts.TTSCapabilities(streaming=False),  # Non-streaming uses synthesize()
             sample_rate=PIPER_SAMPLE_RATE,
             num_channels=PIPER_NUM_CHANNELS,
         )
-        # Use streaming endpoint for lower latency
+        # Use streaming HTTP endpoint for lower latency chunked delivery
         self._base_url = base_url.replace("/api/synthesize", "/api/synthesize/stream")
         self._session: aiohttp.ClientSession | None = None
-        logger.info(f"[TTS] Initialized with streaming endpoint: {self._base_url}")
+        logger.info(f"[TTS] Initialized with endpoint: {self._base_url}")
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
