@@ -8,7 +8,7 @@ Common issues and solutions for the LiveKit AI Voice Agent platform.
 ```
 whisperlive [⣿⣿⣿] Pulling
 unexpected EOF
-```
+````
 
 ### Solutions
 
