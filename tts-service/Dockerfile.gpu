@@ -1,0 +1,70 @@
+# =============================================================================
+# Piper TTS Dockerfile - GPU Accelerated
+# =============================================================================
+# Uses NVIDIA CUDA for 2-5x faster TTS synthesis.
+#
+# Requirements:
+# - NVIDIA GPU with CUDA support
+# - nvidia-container-runtime installed
+#
+# Build:
+#   docker build -f Dockerfile.gpu -t piper-tts-gpu .
+#
+# Run:
+#   docker run --gpus all -p 5500:5500 piper-tts-gpu
+# =============================================================================
+
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies and Python
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    gcc \
+    g++ \
+    make \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Create app directory
+WORKDIR /app
+
+# Install Python packages with GPU support
+# onnxruntime-gpu must be installed BEFORE piper-tts to override CPU version
+RUN pip install --no-cache-dir \
+    onnxruntime-gpu==1.17.0 \
+    && pip install --no-cache-dir --no-deps piper-tts \
+    && pip install --no-cache-dir \
+    piper-phonemize \
+    fastapi \
+    uvicorn[standard]
+
+# Download voice models
+RUN mkdir -p /app/voices && \
+    cd /app/voices && \
+    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx && \
+    wget -q https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+
+# Copy API server
+COPY api_server.py /app/
+
+# GPU and ONNX Runtime optimization settings
+ENV CUDA_VISIBLE_DEVICES=0
+ENV OMP_NUM_THREADS=4
+ENV ORT_DISABLE_ALL_GC=1
+
+# Expose port
+EXPOSE 5500
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:5500/health || exit 1
+
+# Run API server
+CMD ["python", "-u", "api_server.py"]

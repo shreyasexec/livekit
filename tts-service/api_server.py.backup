@@ -2,22 +2,16 @@
 Piper TTS API Server
 
 Provides HTTP API endpoints for Piper text-to-speech synthesis.
-
-Performance Optimization:
-- Uses native piper-tts Python library for in-memory model (no subprocess)
-- Model is cached after first load (~200-400ms faster per request)
-- Falls back to subprocess if native loading fails
+This server wraps the Piper TTS command-line tool with a REST API.
 """
 
 import asyncio
 import io
 import logging
 import struct
-import time
 import wave
-import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
@@ -33,88 +27,12 @@ logger = logging.getLogger(__name__)
 # Create FastAPI app
 app = FastAPI(
     title="Piper TTS API",
-    description="HTTP API for Piper text-to-speech synthesis (optimized)",
-    version="1.1.0"
+    description="HTTP API for Piper text-to-speech synthesis",
+    version="1.0.0"
 )
 
 # Voice models directory
 VOICES_DIR = Path("/app/voices")
-
-# =============================================================================
-# NATIVE PIPER-TTS SUPPORT - Performance Optimization
-# =============================================================================
-# Load voice model into memory using piper-tts Python library.
-# This avoids subprocess spawning overhead (~200-400ms per request).
-# =============================================================================
-
-# Cache for loaded voice models
-_voice_cache: Dict[str, Any] = {}
-_voice_lock = threading.Lock()
-_use_native = True  # Try native first, fallback to subprocess
-
-
-def _try_load_native():
-    """Try to import piper-tts and mark if available."""
-    global _use_native
-    try:
-        from piper import PiperVoice
-        logger.info("[TTS] Native piper-tts library available")
-        return True
-    except ImportError:
-        logger.warning("[TTS] Native piper-tts not available, using subprocess")
-        _use_native = False
-        return False
-
-
-# Check native support at startup
-_try_load_native()
-
-
-async def get_voice(voice_name: str):
-    """
-    Get a cached voice model, loading if needed.
-
-    This keeps the model in memory for faster synthesis.
-    """
-    global _voice_cache, _use_native
-
-    if not _use_native:
-        return None
-
-    if voice_name in _voice_cache:
-        return _voice_cache[voice_name]
-
-    voice_path = VOICES_DIR / f"{voice_name}.onnx"
-    config_path = VOICES_DIR / f"{voice_name}.onnx.json"
-
-    if not voice_path.exists():
-        return None
-
-    try:
-        from piper import PiperVoice
-
-        # Load voice model (blocks, but only once per voice)
-        def load_voice():
-            logger.info(f"[TTS] Loading voice model: {voice_name}")
-            start = time.time()
-            voice = PiperVoice.load(str(voice_path), str(config_path) if config_path.exists() else None)
-            elapsed = time.time() - start
-            logger.info(f"[TTS] Voice model loaded in {elapsed:.2f}s")
-            return voice
-
-        # Run in thread to not block event loop
-        loop = asyncio.get_event_loop()
-        voice = await loop.run_in_executor(None, load_voice)
-
-        with _voice_lock:
-            _voice_cache[voice_name] = voice
-
-        return voice
-
-    except Exception as e:
-        logger.error(f"[TTS] Failed to load native voice: {e}")
-        _use_native = False
-        return None
 
 
 class SynthesizeRequest(BaseModel):
@@ -274,9 +192,6 @@ async def synthesize_stream(request: SynthesizeRequest):
     """
     Synthesize text to speech using Piper with streaming output.
 
-    Performance: Uses native piper-tts library when available (saves ~200-400ms).
-    Falls back to subprocess if native not available.
-
     Returns raw PCM chunks as they are generated for lower latency.
     """
     try:
@@ -288,24 +203,7 @@ async def synthesize_stream(request: SynthesizeRequest):
                 detail=f"Voice model not found: {request.voice}"
             )
 
-        # Try native synthesis first (much faster - model in memory)
-        voice = await get_voice(request.voice)
-
-        if voice is not None:
-            logger.info(f"[TTS-NATIVE] Streaming: '{request.text[:50]}...'")
-            return StreamingResponse(
-                stream_native(request.text, voice),
-                media_type="audio/pcm",
-                headers={
-                    "X-Sample-Rate": str(request.sample_rate),
-                    "X-Channels": "1",
-                    "X-Sample-Width": "2",
-                    "X-Method": "native",
-                },
-            )
-
-        # Fallback to subprocess
-        logger.info(f"[TTS-SUBPROCESS] Streaming: '{request.text[:50]}...'")
+        logger.info(f"Streaming synthesis: '{request.text[:50]}...' with voice {request.voice}")
 
         async def generate_audio():
             """Generator that yields PCM chunks as they're produced."""
@@ -335,7 +233,7 @@ async def synthesize_stream(request: SynthesizeRequest):
                 yield chunk
 
             await process.wait()
-            logger.info(f"[TTS-SUBPROCESS] Streamed {total_bytes} bytes")
+            logger.info(f"Streamed {total_bytes} bytes of PCM audio")
 
         return StreamingResponse(
             generate_audio(),
@@ -344,7 +242,6 @@ async def synthesize_stream(request: SynthesizeRequest):
                 "X-Sample-Rate": str(request.sample_rate),
                 "X-Channels": "1",
                 "X-Sample-Width": "2",
-                "X-Method": "subprocess",
             },
         )
 
@@ -353,62 +250,6 @@ async def synthesize_stream(request: SynthesizeRequest):
     except Exception as e:
         logger.error(f"Streaming synthesis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-async def stream_native(text: str, voice):
-    """
-    Stream audio using native piper-tts synthesize().
-
-    Uses threading to run synthesis in background while yielding chunks.
-    """
-    import queue
-
-    start = time.time()
-    first_chunk = True
-    total_bytes = 0
-    chunk_queue = queue.Queue()
-    error_holder = [None]
-    done = threading.Event()
-
-    def producer():
-        """Run synthesis in thread, push chunks to queue."""
-        try:
-            for audio_chunk in voice.synthesize(text):
-                pcm_bytes = audio_chunk.audio_int16_bytes
-                if pcm_bytes:
-                    chunk_queue.put(pcm_bytes)
-        except Exception as e:
-            error_holder[0] = e
-            logger.error(f"[TTS-NATIVE] Producer error: {e}")
-        finally:
-            done.set()
-
-    # Start producer thread
-    thread = threading.Thread(target=producer, daemon=True)
-    thread.start()
-
-    # Yield chunks as they arrive
-    while True:
-        try:
-            chunk = chunk_queue.get(timeout=0.05)
-            if first_chunk:
-                elapsed = time.time() - start
-                logger.info(f"[TTS-NATIVE] First chunk: {elapsed:.3f}s")
-                first_chunk = False
-            total_bytes += len(chunk)
-            yield chunk
-        except queue.Empty:
-            if done.is_set() and chunk_queue.empty():
-                break
-            await asyncio.sleep(0.01)
-
-    thread.join(timeout=2.0)
-
-    if error_holder[0]:
-        logger.error(f"[TTS-NATIVE] Error: {error_holder[0]}")
-
-    elapsed = time.time() - start
-    logger.info(f"[TTS-NATIVE] Complete: {total_bytes} bytes in {elapsed:.2f}s")
 
 
 @app.get("/")
