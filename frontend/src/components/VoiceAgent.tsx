@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { LiveKitRoom, useVoiceAssistant, RoomAudioRenderer, BarVisualizer, useRoomContext } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
 import '@livekit/components-styles';
@@ -21,6 +21,12 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
   >([]);
   const [agentState, setAgentState] = useState<string>('initializing');
   const [userState, setUserState] = useState<string>('idle');
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when new transcripts arrive
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcripts]);
 
   useEffect(() => {
     if (!room) return;
@@ -171,7 +177,10 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
           </div>
           <div className="h-80 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
             {transcriptList.length > 0 ? (
-              transcriptList
+              <>
+                {transcriptList}
+                <div ref={transcriptEndRef} />
+              </>
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-center">
                 <div className="text-6xl mb-4">💬</div>

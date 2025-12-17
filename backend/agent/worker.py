@@ -153,7 +153,7 @@ class WhisperLiveKitSpeechStream(stt.SpeechStream):
     when interim text hasn't changed for a period.
     """
 
-    STABLE_TEXT_TIMEOUT = 0.5  # Force finalize if text unchanged for 500ms
+    STABLE_TEXT_TIMEOUT = 0.3  # Force finalize if text unchanged for 300ms (reduced for lower latency)
 
     def __init__(
         self,
@@ -187,8 +187,8 @@ class WhisperLiveKitSpeechStream(stt.SpeechStream):
             """Send audio frames to WhisperLiveKit as raw PCM (s16le)."""
             nonlocal closing_ws
 
-            # Buffer for accumulating audio samples
-            samples_per_chunk = self._opts.sample_rate // 20  # 50ms chunks
+            # Buffer for accumulating audio samples - smaller chunks for lower latency
+            samples_per_chunk = self._opts.sample_rate // 40  # 25ms chunks (reduced from 50ms)
             audio_buffer = utils.audio.AudioByteStream(
                 sample_rate=self._opts.sample_rate,
                 num_channels=1,
@@ -470,16 +470,18 @@ PIPER_CHUNK_SIZE = 4096  # Send audio in smaller chunks to prevent stuttering
 
 
 class AsyncPiperTTS(tts.TTS):
-    """Async Piper TTS with chunked audio output for smooth playback."""
+    """Async Piper TTS with streaming output for low latency playback."""
 
     def __init__(self, base_url: str):
         super().__init__(
-            capabilities=tts.TTSCapabilities(streaming=False),
+            capabilities=tts.TTSCapabilities(streaming=True),  # Enable streaming
             sample_rate=PIPER_SAMPLE_RATE,
             num_channels=PIPER_NUM_CHANNELS,
         )
-        self._base_url = base_url
+        # Use streaming endpoint for lower latency
+        self._base_url = base_url.replace("/api/synthesize", "/api/synthesize/stream")
         self._session: aiohttp.ClientSession | None = None
+        logger.info(f"[TTS] Initialized with streaming endpoint: {self._base_url}")
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -487,7 +489,7 @@ class AsyncPiperTTS(tts.TTS):
         return self._session
 
     def synthesize(self, text: str, *, conn_options=DEFAULT_API_CONNECT_OPTIONS):
-        return AsyncPiperChunkedStream(
+        return AsyncPiperStreamingStream(
             tts=self,
             input_text=text,
             conn_options=conn_options,
@@ -496,8 +498,8 @@ class AsyncPiperTTS(tts.TTS):
         )
 
 
-class AsyncPiperChunkedStream(tts.ChunkedStream):
-    """Async chunked stream for Piper TTS with proper audio chunking."""
+class AsyncPiperStreamingStream(tts.ChunkedStream):
+    """Async streaming TTS - emits audio chunks as they arrive from Piper for lowest latency."""
 
     def __init__(
         self,
@@ -513,38 +515,12 @@ class AsyncPiperChunkedStream(tts.ChunkedStream):
         self._session = http_session
 
     async def _run(self, output_emitter: tts.AudioEmitter):
-        """Fetch audio from Piper and emit in chunks for smooth playback."""
+        """Stream audio from Piper in real-time for lowest latency."""
         synthesis_start = time.time()
+        first_chunk_time = None
 
         try:
-            # Async HTTP request to Piper TTS
-            async with self._session.post(
-                self._base_url,
-                headers={"Content-Type": "application/json"},
-                json={"text": self.input_text},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Piper TTS error: {response.status} - {error_text}")
-                    return
-
-                # Read full audio (Piper returns complete WAV)
-                wav_data = await response.read()
-
-            fetch_time = time.time() - synthesis_start
-            logger.info(f"[TTS] Piper synthesis took {fetch_time:.2f}s for: '{self.input_text[:50]}...'")
-
-            # Parse WAV and extract PCM data
-            # WAV header is 44 bytes for standard PCM
-            if len(wav_data) < 44:
-                logger.error(f"[TTS] Invalid WAV data: too short ({len(wav_data)} bytes)")
-                return
-
-            # Skip WAV header (44 bytes) to get raw PCM
-            pcm_data = wav_data[44:]
-
-            # Initialize emitter
+            # Initialize emitter immediately
             output_emitter.initialize(
                 request_id=utils.shortuuid(),
                 sample_rate=PIPER_SAMPLE_RATE,
@@ -552,26 +528,45 @@ class AsyncPiperChunkedStream(tts.ChunkedStream):
                 mime_type="audio/pcm",
             )
 
-            # Push audio in chunks for smooth playback
-            # This prevents the "stuttering then smooth" behavior
-            offset = 0
-            chunks_sent = 0
-            while offset < len(pcm_data):
-                chunk = pcm_data[offset:offset + PIPER_CHUNK_SIZE]
-                output_emitter.push(chunk)
-                offset += PIPER_CHUNK_SIZE
-                chunks_sent += 1
-                # Small yield to allow other tasks to run
-                if chunks_sent % 10 == 0:
-                    await asyncio.sleep(0)
+            # Async streaming HTTP request to Piper TTS
+            async with self._session.post(
+                self._base_url,
+                headers={"Content-Type": "application/json"},
+                json={"text": self.input_text},
+                timeout=aiohttp.ClientTimeout(total=30, sock_read=10),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"[TTS] Piper streaming error: {response.status} - {error_text}")
+                    return
+
+                # Stream PCM chunks as they arrive
+                chunks_sent = 0
+                total_bytes = 0
+
+                async for chunk in response.content.iter_chunked(PIPER_CHUNK_SIZE):
+                    if first_chunk_time is None:
+                        first_chunk_time = time.time()
+                        time_to_first = first_chunk_time - synthesis_start
+                        logger.info(f"[TTS] Time to first audio chunk: {time_to_first:.3f}s")
+
+                    output_emitter.push(chunk)
+                    chunks_sent += 1
+                    total_bytes += len(chunk)
+
+                    # Yield control periodically
+                    if chunks_sent % 5 == 0:
+                        await asyncio.sleep(0)
 
             output_emitter.flush()
-            logger.debug(f"[TTS] Sent {chunks_sent} audio chunks")
+
+            total_time = time.time() - synthesis_start
+            logger.info(f"[TTS] Streamed {total_bytes} bytes in {chunks_sent} chunks, total: {total_time:.2f}s")
 
         except asyncio.TimeoutError:
-            logger.error("[TTS] Piper TTS request timed out")
+            logger.error("[TTS] Piper TTS streaming timed out")
         except aiohttp.ClientError as e:
-            logger.error(f"[TTS] Piper TTS connection error: {e}")
+            logger.error(f"[TTS] Piper TTS streaming error: {e}")
         except Exception as e:
             logger.error(f"[TTS] Piper TTS error: {e}")
 
@@ -605,11 +600,11 @@ def create_voice_pipeline(
     # Create async Piper TTS with chunked output
     piper_tts = AsyncPiperTTS(f"{piper_tts_url}/api/synthesize")
 
-    # Tune Silero VAD for faster end-of-speech detection
+    # Tune Silero VAD for faster end-of-speech detection - OPTIMIZED
     vad = silero.VAD.load(
-        min_speech_duration=0.05,
-        min_silence_duration=0.25,
-        activation_threshold=0.45,
+        min_speech_duration=0.05,   # Minimum speech to trigger (keep low)
+        min_silence_duration=0.15,  # Reduced from 0.25s for faster turn detection
+        activation_threshold=0.5,   # Slightly higher threshold for cleaner detection
     )
 
     logger.info(f"Voice pipeline created:")
@@ -666,7 +661,7 @@ Speak in a warm, friendly tone. Avoid using special characters or emojis.""",
         tts=tts,
         vad=vad,
         turn_detection="vad",
-        min_endpointing_delay=0.3,
+        min_endpointing_delay=0.2,  # Reduced from 0.3s for faster response initiation
     )
 
     # Timing tracking for latency analysis
@@ -681,6 +676,27 @@ Speak in a warm, friendly tone. Avoid using special characters or emojis.""",
     }
 
     # Set up event handlers for debugging and timing
+    # Helper function to publish transcripts to frontend
+    async def publish_transcript(speaker: str, text: str, participant_identity: str = ""):
+        """Publish transcript to frontend via data channel."""
+        from datetime import datetime
+        try:
+            transcript_data = json.dumps({
+                "type": "transcript",
+                "speaker": speaker,  # "user" or "assistant"
+                "text": text,
+                "timestamp": datetime.utcnow().isoformat(),
+                "participantIdentity": participant_identity or ("Trinity AI" if speaker == "assistant" else "User"),
+            }).encode("utf-8")
+
+            await ctx.room.local_participant.publish_data(
+                payload=transcript_data,
+                topic="transcripts",
+            )
+            logger.debug(f"[TRANSCRIPT] Published {speaker}: '{text[:50]}...'")
+        except Exception as e:
+            logger.error(f"[TRANSCRIPT] Failed to publish: {e}")
+
     @session.on("user_input_transcribed")
     def on_user_transcript(ev):
         """Handle user speech transcription."""
@@ -688,6 +704,16 @@ Speak in a warm, friendly tone. Avoid using special characters or emojis.""",
             timing_data["stt_final"] = time.time()
             stt_latency = timing_data["stt_final"] - timing_data["speech_start"] if timing_data["speech_start"] > 0 else 0
             logger.info(f"[TIMING] STT Final: '{ev.transcript}' (STT latency: {stt_latency:.2f}s)")
+
+            # Publish user transcript to frontend
+            asyncio.create_task(publish_transcript("user", ev.transcript))
+
+    @session.on("agent_speech_committed")
+    def on_agent_speech(ev):
+        """Handle agent speech - publish to frontend."""
+        if hasattr(ev, 'content') and ev.content:
+            logger.info(f"[AGENT] Speaking: '{ev.content[:50]}...'")
+            asyncio.create_task(publish_transcript("assistant", ev.content))
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev):

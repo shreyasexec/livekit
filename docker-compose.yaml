@@ -83,17 +83,17 @@ services:
       - --language
       - "en"
       - --pcm-input
-      # Latency optimization settings
+      # Latency optimization settings - OPTIMIZED for low latency
       - --min-chunk-size
-      - "0.5"
+      - "0.2"  # Reduced from 0.5s for faster processing
       # Use faster local agreement backend for lower latency
       - --backend-policy
       - "localagreement"
-      # Faster buffer trimming
+      # Faster buffer trimming - reduced for quicker finalization
       - --buffer_trimming
       - "segment"
       - --buffer_trimming_sec
-      - "5"
+      - "2"  # Reduced from 5s for faster segment completion
       # DISABLE WhisperLiveKit VAD - LiveKit's Silero VAD handles turn detection
       # Having two VADs adds latency and can cause conflicts
       - --no-vad
