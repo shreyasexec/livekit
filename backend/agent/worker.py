@@ -66,6 +66,7 @@ class WhisperLiveKitOptions:
     port: int
     language: str
     sample_rate: int
+    use_ssl: bool = False  # Use wss:// instead of ws://
 
 
 class WhisperLiveKitSTT(stt.STT):
@@ -94,6 +95,7 @@ class WhisperLiveKitSTT(stt.STT):
         port: int = 8765,
         language: str = "en",
         sample_rate: int = 16000,
+        use_ssl: bool = False,
     ):
         super().__init__(
             capabilities=stt.STTCapabilities(
@@ -106,9 +108,11 @@ class WhisperLiveKitSTT(stt.STT):
             port=port,
             language=language,
             sample_rate=sample_rate,
+            use_ssl=use_ssl,
         )
         self._session = None
-        logger.info(f"WhisperLiveKitSTT initialized: {host}:{port} (streaming=True, pcm-input mode)")
+        protocol = "wss" if use_ssl else "ws"
+        logger.info(f"WhisperLiveKitSTT initialized: {protocol}://{host}:{port} (streaming=True, pcm-input mode)")
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure we have an aiohttp session with optimized connection settings."""
@@ -148,6 +152,7 @@ class WhisperLiveKitSTT(stt.STT):
             port=self._opts.port,
             language=language or self._opts.language,
             sample_rate=self._opts.sample_rate,
+            use_ssl=self._opts.use_ssl,
         )
         return WhisperLiveKitSpeechStream(
             stt=self,
@@ -193,7 +198,8 @@ class WhisperLiveKitSpeechStream(stt.SpeechStream):
     async def _run(self) -> None:
         """Main streaming loop with WebSocket connection to WhisperLiveKit."""
         closing_ws = False
-        ws_url = f"ws://{self._opts.host}:{self._opts.port}/asr"
+        protocol = "wss" if self._opts.use_ssl else "ws"
+        ws_url = f"{protocol}://{self._opts.host}:{self._opts.port}/asr"
 
         logger.info(f"[{self._session_id}] Connecting to WhisperLiveKit at {ws_url}")
 
@@ -443,9 +449,18 @@ class WhisperLiveKitSpeechStream(stt.SpeechStream):
         # Connect to WhisperLiveKit WebSocket
         ws: aiohttp.ClientWebSocketResponse | None = None
 
+        # For SSL connections with self-signed certs, disable verification
+        import ssl
+        ssl_context = None
+        if self._opts.use_ssl:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            logger.info(f"[{self._session_id}] Using SSL (certificate verification disabled for self-signed)")
+
         try:
             ws = await asyncio.wait_for(
-                self._session.ws_connect(ws_url, ssl=False),
+                self._session.ws_connect(ws_url, ssl=ssl_context if self._opts.use_ssl else False),
                 timeout=self._conn_options.timeout,
             )
             logger.info(f"[{self._session_id}] Connected to WhisperLiveKit")
@@ -601,6 +616,7 @@ def create_voice_pipeline(
     piper_tts_url: str,
     whisperlivekit_host: str,
     whisperlivekit_port: int,
+    whisperlivekit_use_ssl: bool = False,
 ) -> tuple:
     """
     Create the voice pipeline components.
@@ -613,6 +629,7 @@ def create_voice_pipeline(
     whisper_stt = WhisperLiveKitSTT(
         host=whisperlivekit_host,
         port=whisperlivekit_port,
+        use_ssl=whisperlivekit_use_ssl,
     )
 
     # Create Ollama LLM with OpenAI-compatible API
@@ -631,9 +648,10 @@ def create_voice_pipeline(
         activation_threshold=0.5,   # Slightly higher threshold for cleaner detection
     )
 
+    protocol = "wss" if whisperlivekit_use_ssl else "ws"
     logger.info(f"Voice pipeline created:")
     logger.info(f"  - Ollama: {ollama_url}, model: {ollama_model}")
-    logger.info(f"  - WhisperLiveKit: {whisperlivekit_host}:{whisperlivekit_port}")
+    logger.info(f"  - WhisperLiveKit: {protocol}://{whisperlivekit_host}:{whisperlivekit_port}")
     logger.info(f"  - Piper TTS: {piper_tts_url}")
 
     return whisper_stt, llm, piper_tts, vad
@@ -653,11 +671,13 @@ async def entrypoint(ctx: JobContext):
     piper_tts_url = os.getenv("PIPER_TTS_URL", "http://piper-tts:5500")
     whisperlivekit_host = os.getenv("WHISPERLIVEKIT_HOST", "whisperlivekit")
     whisperlivekit_port = int(os.getenv("WHISPERLIVEKIT_PORT", "8765"))
+    whisperlivekit_use_ssl = os.getenv("WHISPERLIVEKIT_USE_SSL", "false").lower() in ("true", "1", "yes")
 
+    protocol = "wss" if whisperlivekit_use_ssl else "ws"
     logger.info(f"Configuration:")
     logger.info(f"  - Ollama URL: {ollama_url}")
     logger.info(f"  - Ollama Model: {ollama_model}")
-    logger.info(f"  - WhisperLiveKit: {whisperlivekit_host}:{whisperlivekit_port}")
+    logger.info(f"  - WhisperLiveKit: {protocol}://{whisperlivekit_host}:{whisperlivekit_port}")
     logger.info(f"  - Piper TTS URL: {piper_tts_url}")
 
     # Create the voice pipeline components
@@ -667,6 +687,7 @@ async def entrypoint(ctx: JobContext):
         piper_tts_url=piper_tts_url,
         whisperlivekit_host=whisperlivekit_host,
         whisperlivekit_port=whisperlivekit_port,
+        whisperlivekit_use_ssl=whisperlivekit_use_ssl,
     )
 
     # Create the agent with just instructions

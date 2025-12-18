@@ -146,9 +146,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - OLLAMA_URL=${OLLAMA_URL:-http://192.168.1.120:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
-      # WhisperLiveKit for STT (using --pcm-input mode)
-      - WHISPERLIVEKIT_HOST=whisperlivekit
+      # WhisperLiveKit for STT - External GPU Server (https://192.168.1.120:8765)
+      - WHISPERLIVEKIT_HOST=192.168.1.120
       - WHISPERLIVEKIT_PORT=8765
+      - WHISPERLIVEKIT_USE_SSL=true
       # Piper TTS URL for livekit-plugins-piper-tts
       - PIPER_TTS_URL=http://piper-tts:5500
     depends_on:
@@ -156,8 +157,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      whisperlivekit:
-        condition: service_healthy
+      # whisperlivekit removed - using external GPU server at 192.168.1.120:8765
       piper-tts:
         condition: service_healthy
     command: ["python", "-m", "agent.worker", "dev"]

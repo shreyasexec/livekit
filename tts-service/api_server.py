@@ -425,6 +425,20 @@ async def root():
     }
 
 
+@app.on_event("startup")
+async def startup_warmup():
+    """Pre-load voice model on startup for faster first request."""
+    logger.info("[STARTUP] Pre-warming TTS model...")
+    try:
+        voice = await get_voice("en_US-lessac-medium")
+        if voice:
+            logger.info("[STARTUP] TTS model loaded and ready!")
+        else:
+            logger.warning("[STARTUP] Native TTS not available, using subprocess")
+    except Exception as e:
+        logger.error(f"[STARTUP] Warmup failed: {e}")
+
+
 if __name__ == "__main__":
     import uvicorn
 
