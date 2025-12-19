@@ -19,6 +19,7 @@ services:
     ports:
       - "50000-50100:50000-50100/udp"
       - "3478:3478"
+      - "7879:7880"  # Internal port for SIP service (bypasses nginx SSL)
     expose:
       - "7880"
       - "7881"

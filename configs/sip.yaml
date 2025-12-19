@@ -1,12 +1,12 @@
 log_level: debug
 api_key: 1uhwH2Iv3aGFNTCGC3bNv0OhBjsffTdgJJiGDgYfJKw=
 api_secret: vh+pYw6eg1DQaMPZH4tdS3t39fwTRvuA4XEqNF37Mf8=
-ws_url: ws://livekit:7880
+# Port 7879 maps directly to livekit:7880 (bypasses nginx SSL)
+ws_url: ws://127.0.0.1:7879
 redis:
-  address: redis:6379
+  address: 127.0.0.1:6379
 sip_port: 5060
 rtp_port_range_start: 10000
 rtp_port_range_end: 20000
-use_external_ip: true
-# For local testing
-# local_ip: 192.168.1.100
+use_external_ip: false
+nat_1_1_ip: 192.168.20.62
