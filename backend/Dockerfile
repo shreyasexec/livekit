@@ -13,13 +13,14 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir livekit-agents
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Download turn detector model files
+RUN python agent/worker.py download-files
 
 ENV PYTHONPATH=/app
 ENV PATH="/root/.local/bin:$PATH"
 
-# Default command
 CMD ["python", "agent/worker.py", "dev"]

@@ -21,6 +21,8 @@ from typing import Optional
 import aiohttp
 from livekit import rtc
 from livekit.agents import (
+    Agent,
+    AgentSession,
     AutoSubscribe,
     JobContext,
     WorkerOptions,
@@ -29,8 +31,8 @@ from livekit.agents import (
     tts,
     utils,
 )
-from livekit.agents.voice import Agent, AgentSession
 from livekit.plugins import openai, silero
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("voice-agent")
@@ -593,30 +595,22 @@ Protect privacy and minimize sensitive data.""",
     for sid, p in ctx.room.remote_participants.items():
         logger.info(f"[FLOW]   - {p.identity} (sid={sid}, kind={p.kind})")
 
-    # Wait for participant
+    # Wait for participant (session.start handles auto-subscription)
     logger.info("[FLOW] Waiting for participant...")
-    try:
-        participant = await asyncio.wait_for(ctx.wait_for_participant(), timeout=30.0)
-        logger.info(f"[FLOW] Participant joined: {participant.identity}")
-    except asyncio.TimeoutError:
-        logger.error("[FLOW] Timeout waiting for participant!")
-        # Try to get first participant manually
-        if ctx.room.remote_participants:
-            participant = list(ctx.room.remote_participants.values())[0]
-            logger.info(f"[FLOW] Using existing participant: {participant.identity}")
-        else:
-            logger.error("[FLOW] No participants in room, cannot proceed")
-            return
+    participant = await ctx.wait_for_participant()
+    logger.info(f"[FLOW] Participant joined: {participant.identity}")
 
     # Create session with STT/TTS/VAD components (LLM is in Agent)
-    # Settings adjusted for SIP/telephony audio quality
+    # VAD + min_endpointing_delay handles turn detection
     logger.info("[FLOW] Creating AgentSession with components...")
     session = AgentSession(
         stt=my_stt,
         tts=my_tts,
         vad=my_vad,
+        turn_detection=MultilingualModel(),
         allow_interruptions=True,
         min_endpointing_delay=0.3,  # 300ms delay for telephony audio
+        max_endpointing_delay=4.0
     )
     logger.info("[FLOW] AgentSession created")
 
@@ -687,8 +681,8 @@ Protect privacy and minimize sensitive data.""",
     logger.info("[FLOW] Generating initial greeting...")
     greeting_start = time.time()
     try:
-        greeting = session.generate_reply(user_input="Hello, please greet me briefly.")
-        logger.info(f"[FLOW] Greeting scheduled in {(time.time()-greeting_start)*1000:.0f}ms")
+        await session.generate_reply(instructions="Greet the user briefly and offer assistance.")
+        logger.info(f"[FLOW] Greeting generated in {(time.time()-greeting_start)*1000:.0f}ms")
     except Exception as e:
         logger.error(f"[FLOW] Greeting generation failed: {e}")
 
