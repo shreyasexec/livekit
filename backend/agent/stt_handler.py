@@ -300,11 +300,11 @@ class WhisperLiveSTT(stt.STT):
             # Wait for transcription with timeout
             transcript_text = ""
             try:
-                # Give WhisperLive time to process - longer wait for CPU processing
-                await asyncio.sleep(1.0)
+                # NO artificial delay - stream audio and get response immediately
+                # GPU-based WhisperLiveKit is fast enough
 
-                # Try to get response with timeout - wait longer for CPU-based Whisper
-                for attempt in range(20):  # Max 10 seconds total
+                # Try to get response with timeout
+                for attempt in range(10):  # Max 5 seconds total
                     try:
                         data = await asyncio.wait_for(
                             client.receive_transcription(),

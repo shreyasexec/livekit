@@ -1,0 +1,19 @@
+{
+  "name": "livekit",
+  "version": "1.0.0",
+  "description": "A comprehensive **100% on-premises, open-source** LiveKit-based AI communication platform with voice calls, video calls, messaging, and AI agent capabilities. Integrates with SIP for telephony, uses self-hosted AI models (Ollama, WhisperLiveKit, Piper TTS), and provides a React frontend with real-time transcription.",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "playwright": "^1.57.0"
+  }
+}

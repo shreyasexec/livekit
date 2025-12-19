@@ -1,7 +1,45 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { LiveKitRoom, useVoiceAssistant, RoomAudioRenderer, BarVisualizer, useRoomContext } from '@livekit/components-react';
-import { RoomEvent } from 'livekit-client';
+import { RoomEvent, RoomOptions, AudioCaptureOptions, AudioPresets } from 'livekit-client';
 import '@livekit/components-styles';
+
+// Production-optimized room options for low-latency voice
+const roomOptions: RoomOptions = {
+  // Adaptive streaming - reduces bandwidth but can add latency, disable for voice
+  adaptiveStream: false,
+  // Dynacast - dynamically adjusts video quality, not needed for voice-only
+  dynacast: false,
+  // Optimize for audio
+  audioCaptureDefaults: {
+    // Disable browser audio processing for lower latency (agent handles this)
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    // Use speech-optimized settings
+    channelCount: 1,
+    sampleRate: 16000,  // Match STT sample rate
+    sampleSize: 16,
+  } as AudioCaptureOptions,
+  // Audio output defaults
+  audioOutput: {
+    deviceId: 'default',
+  },
+  // Publish defaults optimized for voice
+  publishDefaults: {
+    // Use speech audio preset for optimal voice quality and low latency
+    audioPreset: AudioPresets.speech,
+    // Disable simulcast for audio (not applicable)
+    simulcast: false,
+    // Red (redundant encoding) helps with packet loss but adds latency
+    red: false,
+    // DTX (discontinuous transmission) - disable for continuous voice
+    dtx: false,
+  },
+  // Disconnect on page unload
+  disconnectOnPageLeave: true,
+  // Stop local tracks on unpublish
+  stopLocalTrackOnUnpublish: true,
+};
 
 interface VoiceAgentProps {
   token: string;
@@ -22,6 +60,52 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
   const [agentState, setAgentState] = useState<string>('initializing');
   const [userState, setUserState] = useState<string>('idle');
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+
+  // Latency measurement state
+  const [latencyMetrics, setLatencyMetrics] = useState<{
+    lastResponseTime: number | null;
+    avgResponseTime: number | null;
+    measurements: number[];
+  }>({ lastResponseTime: null, avgResponseTime: null, measurements: [] });
+  const thinkingStartRef = useRef<number | null>(null);
+  const prevStateRef = useRef<string>('');
+
+  // Track state transitions for latency measurement
+  // LiveKit voice assistant states: 'idle' | 'listening' | 'thinking' | 'speaking'
+  // We measure from when 'thinking' starts (user finished speaking, processing begins)
+  // to when 'speaking' starts (agent begins response)
+  useEffect(() => {
+    const prevState = prevStateRef.current;
+    prevStateRef.current = state;
+
+    // Start timing when entering 'thinking' state (user stopped speaking, processing started)
+    if (state === 'thinking' && prevState !== 'thinking') {
+      thinkingStartRef.current = performance.now();
+      console.log('[LATENCY] Processing started (thinking state) at:', thinkingStartRef.current);
+    }
+
+    // Calculate latency when agent starts speaking
+    if (state === 'speaking' && thinkingStartRef.current) {
+      const responseTime = performance.now() - thinkingStartRef.current;
+      console.log('[LATENCY] Agent response time (thinking->speaking):', responseTime.toFixed(0), 'ms');
+
+      setLatencyMetrics(prev => {
+        const newMeasurements = [...prev.measurements.slice(-9), responseTime]; // Keep last 10
+        const avg = newMeasurements.reduce((a, b) => a + b, 0) / newMeasurements.length;
+        return {
+          lastResponseTime: responseTime,
+          avgResponseTime: avg,
+          measurements: newMeasurements,
+        };
+      });
+      thinkingStartRef.current = null;
+    }
+
+    // Also log state changes for debugging
+    if (prevState !== state) {
+      console.log('[STATE]', prevState, '->', state);
+    }
+  }, [state]);
 
   // Auto-scroll to bottom when new transcripts arrive
   useEffect(() => {
@@ -160,6 +244,32 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
           <p className="text-center text-gray-300 text-lg capitalize mb-2">{state}</p>
           <p className="text-center text-gray-400 text-sm">Speak naturally - the agent will respond</p>
 
+          {/* Latency Metrics Display */}
+          {latencyMetrics.lastResponseTime !== null && (
+            <div className="mt-4 p-3 bg-gray-900 rounded-lg border border-gray-700">
+              <div className="flex justify-between items-center text-sm">
+                <span className="text-gray-400">Response Time:</span>
+                <span className={`font-mono font-bold ${
+                  latencyMetrics.lastResponseTime < 2000 ? 'text-green-400' :
+                  latencyMetrics.lastResponseTime < 4000 ? 'text-yellow-400' : 'text-red-400'
+                }`}>
+                  {(latencyMetrics.lastResponseTime / 1000).toFixed(2)}s
+                </span>
+              </div>
+              {latencyMetrics.avgResponseTime !== null && (
+                <div className="flex justify-between items-center text-sm mt-1">
+                  <span className="text-gray-400">Avg ({latencyMetrics.measurements.length} samples):</span>
+                  <span className={`font-mono ${
+                    latencyMetrics.avgResponseTime < 2000 ? 'text-green-400' :
+                    latencyMetrics.avgResponseTime < 4000 ? 'text-yellow-400' : 'text-red-400'
+                  }`}>
+                    {(latencyMetrics.avgResponseTime / 1000).toFixed(2)}s
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           <button
             onClick={onDisconnect}
             className="w-full mt-6 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-gray-800"
@@ -206,6 +316,7 @@ export default function VoiceAgent({ token, serverUrl, onDisconnect }: VoiceAgen
       audio={true}
       video={false}
       onDisconnected={onDisconnect}
+      options={roomOptions}
     >
       <VoiceAssistantUI onDisconnect={onDisconnect} />
     </LiveKitRoom>

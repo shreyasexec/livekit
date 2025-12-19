@@ -207,6 +207,7 @@ async def generate_token(request: TokenRequest):
     Generate LiveKit access token for a participant.
 
     The token grants permissions to join a room and publish/subscribe tracks.
+    Also creates/ensures the room exists and requests agent dispatch.
 
     Args:
         request: Token request with room and participant details
@@ -222,6 +223,42 @@ async def generate_token(request: TokenRequest):
             f"Generating token for {request.participant_name} "
             f"in room {request.room_name}"
         )
+
+        # Create room and dispatch agent
+        lk_api = await get_livekit_api()
+
+        try:
+            # Create/get room
+            room = await lk_api.room.create_room(
+                api.CreateRoomRequest(
+                    name=request.room_name,
+                    empty_timeout=300,
+                    max_participants=50,
+                )
+            )
+            logger.info(f"Room: {room.name} (sid: {room.sid})")
+
+            # Check if agent already dispatched for this room
+            try:
+                existing = await lk_api.agent_dispatch.list_dispatch(
+                    api.ListAgentDispatchRequest(room=request.room_name)
+                )
+                if existing and len(existing.agent_dispatches) > 0:
+                    logger.info(f"Agent already dispatched for room: {request.room_name}")
+                else:
+                    # Request agent dispatch
+                    await lk_api.agent_dispatch.create_dispatch(
+                        api.CreateAgentDispatchRequest(
+                            room=request.room_name,
+                            agent_name="",
+                        )
+                    )
+                    logger.info(f"Agent dispatch requested for room: {request.room_name}")
+            except Exception as e:
+                logger.debug(f"Dispatch check/create note: {e}")
+
+        except Exception as e:
+            logger.warning(f"Room setup note: {e}")
 
         token = api.AccessToken(
             api_key=LIVEKIT_API_KEY,

@@ -11,7 +11,7 @@ RUN mkdir -p /etc/ssl/private /etc/ssl/certs && \
     -keyout /etc/ssl/private/localhost-key.pem \
     -out /etc/ssl/certs/localhost.pem \
     -subj "/CN=localhost" \
-    -addext "subjectAltName=DNS:localhost,IP:192.168.20.224"
+    -addext "subjectAltName=DNS:localhost,IP:192.168.20.62"
 
 # Copy package files
 COPY package*.json ./

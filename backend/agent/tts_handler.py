@@ -282,7 +282,8 @@ class PiperChunkedStream(tts.ChunkedStream):
     """
     Chunked stream implementation for Piper TTS.
 
-    Handles the actual synthesis by communicating with the Piper HTTP service.
+    Uses streaming endpoint for lower latency - audio chunks are delivered
+    as they're generated rather than waiting for full synthesis.
     """
 
     def __init__(
@@ -301,7 +302,7 @@ class PiperChunkedStream(tts.ChunkedStream):
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         """
-        Run the synthesis task.
+        Run the synthesis task with streaming for lower latency.
 
         Args:
             output_emitter: AudioEmitter to push audio data to
@@ -311,36 +312,40 @@ class PiperChunkedStream(tts.ChunkedStream):
         try:
             logger.debug(f"Synthesizing text: '{self._input_text[:50]}...'")
 
-            # Make HTTP request to Piper service
+            # Initialize the output emitter with PCM format (streaming endpoint returns raw PCM)
+            output_emitter.initialize(
+                request_id=request_id,
+                sample_rate=self._tts.sample_rate,
+                num_channels=self._tts.num_channels,
+                mime_type="audio/pcm",  # Streaming endpoint returns raw PCM
+            )
+
+            total_bytes = 0
+
+            # Use streaming endpoint for lower latency
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f"{self._tts._opts.base_url}/api/synthesize",
+                async with client.stream(
+                    "POST",
+                    f"{self._tts._opts.base_url}/api/synthesize/stream",
                     json={
                         "text": self._input_text,
                         "voice": self._tts._opts.voice,
                         "sample_rate": self._tts.sample_rate,
                     },
                     timeout=self._conn_options.timeout,
-                )
-                resp.raise_for_status()
-                audio_data = resp.content
+                ) as resp:
+                    resp.raise_for_status()
 
-            # Initialize the output emitter with audio format info
-            output_emitter.initialize(
-                request_id=request_id,
-                sample_rate=self._tts.sample_rate,
-                num_channels=self._tts.num_channels,
-                mime_type="audio/wav",  # Piper returns WAV format
-            )
-
-            # Push the audio data
-            output_emitter.push(audio_data)
+                    # Stream chunks as they arrive (4KB = ~90ms of audio)
+                    async for chunk in resp.aiter_bytes(4096):
+                        total_bytes += len(chunk)
+                        output_emitter.push(chunk)
 
             # Flush to signal completion
             output_emitter.flush()
 
             logger.debug(
-                f"Synthesis complete: {len(audio_data)} bytes, "
+                f"Synthesis complete: {total_bytes} bytes, "
                 f"request_id={request_id}"
             )
 

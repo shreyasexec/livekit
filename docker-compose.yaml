@@ -59,56 +59,9 @@ services:
 
     # Removed profiles to auto-start with docker compose up
 
-  # WhisperLiveKit STT Service - Using --pcm-input for raw PCM audio from LiveKit
-  # See: https://github.com/QuentinFuxa/WhisperLiveKit
-  whisperlivekit:
-    build:
-      context: ./whisperlivekit
-      dockerfile: Dockerfile
-    ports:
-      - "8765:8765"
-    volumes:
-      - whisper_cache:/root/.cache/huggingface  # Persist Whisper model cache
-    environment:
-      - OMP_NUM_THREADS=4
-      - HF_HOME=/root/.cache/huggingface
-    command:
-      - wlk
-      - --host
-      - "0.0.0.0"
-      - --port
-      - "8765"
-      - --model
-      - "small"
-      - --language
-      - "en"
-      - --pcm-input
-      # Latency optimization settings - OPTIMIZED for low latency
-      - --min-chunk-size
-      - "0.2"  # Reduced from 0.5s for faster processing
-      # Use faster local agreement backend for lower latency
-      - --backend-policy
-      - "localagreement"
-      # Faster buffer trimming - reduced for quicker finalization
-      - --buffer_trimming
-      - "segment"
-      - --buffer_trimming_sec
-      - "2"  # Reduced from 5s for faster segment completion
-      # DISABLE WhisperLiveKit VAD - LiveKit's Silero VAD handles turn detection
-      # Having two VADs adds latency and can cause conflicts
-      - --no-vad
-    networks:
-      - livekit-network
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >
-          python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',8765)); s.close()"
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-    restart: unless-stopped
+  # WhisperLiveKit STT Service - REMOVED
+  # Using external WhisperLiveKit GPU server at 192.168.1.120:8765
+  # This avoids running CPU-based Whisper locally which adds significant latency
 
   # Piper TTS Service
   piper-tts:
@@ -140,7 +93,7 @@ services:
       - ./backend/agent:/app/agent:ro  # Live code sync for development
     environment:
       - LIVEKIT_URL=http://livekit:7880
-      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:7880
+      - LIVEKIT_PUBLIC_URL=https://192.168.20.62:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
@@ -174,10 +127,13 @@ services:
       dockerfile: Dockerfile.api
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend/main.py:/app/main.py:ro  # Live code sync for development
     environment:
       - LIVEKIT_URL=http://livekit:7880
-      # Use port 3000 so WebSocket goes through Vite proxy (avoids SSL cert issues)
-      - LIVEKIT_PUBLIC_URL=https://192.168.20.224:3000
+      # Use port 7880 for nginx SSL proxy to LiveKit (properly configured for WebSocket)
+      # Note: main.py does .replace("http", "ws") so use https:// format
+      - LIVEKIT_PUBLIC_URL=https://192.168.20.62:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - REDIS_URL=redis://redis:6379
@@ -224,8 +180,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Use same origin WebSocket (goes through Vite proxy to livekit:7880)
-      - VITE_LIVEKIT_URL=wss://192.168.20.224:3000
+      # LiveKit WebSocket URL - nginx SSL proxy on port 7880
+      # NOTE: User must visit https://192.168.20.62:7880 first to accept the self-signed certificate
+      - VITE_LIVEKIT_URL=wss://192.168.20.62:7880
       # Empty VITE_API_URL means relative paths, goes through Vite proxy to backend
       - VITE_API_URL=
     depends_on:
@@ -242,4 +199,3 @@ networks:
 volumes:
   redis_data:
   piper_voices:
-  whisper_cache:
