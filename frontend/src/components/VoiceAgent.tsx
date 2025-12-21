@@ -55,10 +55,57 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
   const { state, audioTrack } = useVoiceAssistant();
   const room = useRoomContext();
   const [transcripts, setTranscripts] = useState<
-    { speaker: string; text: string; timestamp?: string; participantIdentity?: string }[]
+    { speaker: string; text: string; timestamp?: string; participantIdentity?: string; detectedLanguage?: string }[]
   >([]);
   const [agentState, setAgentState] = useState<string>('initializing');
   const [userState, setUserState] = useState<string>('idle');
+  const [lastDetectedLanguage, setLastDetectedLanguage] = useState<string>('en');
+
+  useEffect(() => {
+    const typedWindow = window as typeof window & { __lkRoom?: typeof room };
+    if (room) {
+      typedWindow.__lkRoom = room;
+    }
+    return () => {
+      if (typedWindow.__lkRoom === room) {
+        delete typedWindow.__lkRoom;
+      }
+    };
+  }, [room]);
+
+  // Simple language detection based on Unicode script ranges
+  const detectScriptLanguage = (text: string): string => {
+    // Devanagari (Hindi, Sanskrit, etc.)
+    if (/[\u0900-\u097F]/.test(text)) return 'hi';
+    // Arabic
+    if (/[\u0600-\u06FF]/.test(text)) return 'ar';
+    // Chinese (CJK Unified)
+    if (/[\u4E00-\u9FFF]/.test(text)) return 'zh';
+    // Japanese (Hiragana, Katakana)
+    if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return 'ja';
+    // Korean (Hangul)
+    if (/[\uAC00-\uD7AF]/.test(text)) return 'ko';
+    // Cyrillic (Russian, etc.)
+    if (/[\u0400-\u04FF]/.test(text)) return 'ru';
+    // Default to English
+    return 'en';
+  };
+
+  const getLanguageName = (code: string): string => {
+    const languages: Record<string, string> = {
+      'en': 'English',
+      'hi': 'Hindi',
+      'ar': 'Arabic',
+      'zh': 'Chinese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'ru': 'Russian',
+      'es': 'Spanish',
+      'fr': 'French',
+      'de': 'German',
+    };
+    return languages[code] || code.toUpperCase();
+  };
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Latency measurement state
@@ -121,9 +168,19 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
         const data = JSON.parse(decoded);
 
         // Handle transcripts
-        if (topic === 'transcripts' && data?.text) {
+        if ((topic === 'transcripts' || data?.type === 'transcript') && data?.text) {
           const speakerType = data.speaker || 'user';
           const participantIdentity = data.participantIdentity || participant?.identity || 'Unknown';
+          // Detect language from text script or use provided language
+          const detectedLang = data.detectedLanguage || detectScriptLanguage(data.text);
+          const typedWindow = window as typeof window & { __lkLastTranscript?: typeof data };
+          typedWindow.__lkLastTranscript = data;
+
+          // Update last detected language for user speech
+          if (speakerType === 'user') {
+            setLastDetectedLanguage(detectedLang);
+          }
+
           setTranscripts((prev) => {
             // Avoid duplicates
             const isDuplicate = prev.some(
@@ -134,7 +191,8 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
               speaker: speakerType,
               text: data.text,
               timestamp: data.timestamp,
-              participantIdentity: participantIdentity
+              participantIdentity: participantIdentity,
+              detectedLanguage: detectedLang
             }];
             return next.slice(-30); // keep the list reasonably short
           });
@@ -154,9 +212,27 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
       }
     };
 
+    const handleChatMessage = (message: { message: string; timestamp: number }, participant?: any) => {
+      const isLocal = participant?.identity === room.localParticipant?.identity;
+      const typedWindow = window as typeof window & { __lkLastChatMessage?: typeof message };
+      typedWindow.__lkLastChatMessage = message;
+      setTranscripts((prev) => {
+        const next = [...prev, {
+          speaker: isLocal ? 'user' : 'assistant',
+          text: message.message,
+          timestamp: new Date(message.timestamp).toISOString(),
+          participantIdentity: participant?.identity || 'Unknown',
+          detectedLanguage: detectScriptLanguage(message.message),
+        }];
+        return next.slice(-30);
+      });
+    };
+
     room.on(RoomEvent.DataReceived, handleData);
+    room.on(RoomEvent.ChatMessage, handleChatMessage);
     return () => {
       room.off(RoomEvent.DataReceived, handleData);
+      room.off(RoomEvent.ChatMessage, handleChatMessage);
     };
   }, [room]);
 
@@ -188,6 +264,11 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
                 }`}>
                   {displayName}
                 </span>
+                {t.detectedLanguage && t.detectedLanguage !== 'en' && (
+                  <span className="text-xs bg-yellow-700/50 text-yellow-300 px-1.5 py-0.5 rounded">
+                    {getLanguageName(t.detectedLanguage)}
+                  </span>
+                )}
                 {t.timestamp && (
                   <span className="text-xs text-gray-500">
                     {new Date(t.timestamp).toLocaleTimeString()}
@@ -234,6 +315,28 @@ function VoiceAssistantUI({ onDisconnect }: VoiceAssistantUIProps) {
               <span className="text-sm font-semibold">
                 {isAgentSpeaking ? 'Agent Speaking' : 'Agent'}
               </span>
+            </div>
+          </div>
+
+          {/* Language Detection Display */}
+          <div className="flex justify-center mb-4">
+            <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+              lastDetectedLanguage !== 'en'
+                ? 'bg-yellow-900/50 border border-yellow-600'
+                : 'bg-gray-700/50 border border-gray-600'
+            }`}>
+              <span className="text-sm">🌐</span>
+              <span className="text-sm text-gray-300">Detected:</span>
+              <span className={`text-sm font-bold ${
+                lastDetectedLanguage !== 'en' ? 'text-yellow-400' : 'text-green-400'
+              }`}>
+                {getLanguageName(lastDetectedLanguage)}
+              </span>
+              {lastDetectedLanguage !== 'en' && (
+                <span className="text-xs text-yellow-400 ml-2">
+                  (Agent responds in English)
+                </span>
+              )}
             </div>
           </div>
 

@@ -1,0 +1,192 @@
+# ============================================
+# Python
+# ============================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+*.log
+
+# Robot Framework
+results/
+output/
+log.html
+report.html
+output.xml
+selenium-screenshot-*.png
+
+# ============================================
+# Node.js / Frontend
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Dependency directories
+jspm_packages/
+
+# Testing
+coverage/
+
+# Misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ============================================
+# Docker
+# ============================================
+# Don't ignore Dockerfiles, but ignore temp files
+.dockerignore.bak
+
+# ============================================
+# IDE / Editors
+# ============================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================
+# OS
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================
+# Environment & Secrets
+# ============================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+*.secret
+
+# ============================================
+# Logs
+# ============================================
+*.log
+logs/
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================
+# Database
+# ============================================
+*.sqlite
+*.sqlite3
+*.db
+
+# ============================================
+# LiveKit Specific
+# ============================================
+# Test results
+test/robot_tests/results/
+test/voice_automation/results/
+test/voice_automation/output/
+
+# Generated audio files
+*.wav
+*.mp3
+*.ogg
+/tmp/
+
+# Redis data
+redis_data/
+
+# ============================================
+# Temporary Files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+.cache/
+
+# ============================================
+# Documentation Build
+# ============================================
+docs/_build/
+site/
+
+# ============================================
+# Project Specific
+# ============================================
+# Keep these directories but ignore their contents
+/node_modules/
+/tts-service/
+
+# SSL certificates (except example)
+*.crt
+*.key
+!nginx.crt.example
+!nginx.key.example
